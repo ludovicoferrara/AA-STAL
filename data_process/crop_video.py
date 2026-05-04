@@ -90,17 +90,30 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
             # Choose a random duration between 5-10s
             crop_duration = random.uniform(5.0, min(10.0, duration))
             
-            # Calculate start time (try to position in the middle)
-            max_start = duration - crop_duration
-            middle_point = duration / 2 - crop_duration / 2
+            # Calculate number of segments using integer division
+            num_segments = int(duration // crop_duration)
             
-            # Add some randomness but keep it near the middle
-            # Start time will be within 20% of the video length from the middle position
-            variation = min(duration * 0.2, max_start / 2)
-            start_time = max(0, min(max_start, middle_point + random.uniform(-variation, variation)))
+            if num_segments == 0:
+                # If no full segments fit, crop one segment anyway (edge case)
+                num_segments = 1
+                crop_duration = min(crop_duration, duration)
             
-            print(f"Video {video_name} is {duration:.2f}s, cropping {crop_duration:.2f}s from position {start_time:.2f}s")
-            crop_video(video_path, output_path, start_time, crop_duration)
+            print(f"Video {video_name} is {duration:.2f}s, extracting {num_segments} segments of {crop_duration:.2f}s each")
+            
+            for i in range(num_segments):
+                # Consecutive segments starting from 0
+                start_time = i * crop_duration
+                
+                # Ensure the last segment doesn't exceed video duration
+                actual_crop_duration = min(crop_duration, duration - start_time)
+                
+                # Create output filename with part suffix
+                base_name = os.path.splitext(video_name)[0]
+                output_name = f"{base_name}_part{i+1}.mp4"
+                output_path = os.path.join(output_dir, output_name)
+                
+                print(f"  Cropping segment {i+1}: {actual_crop_duration:.2f}s from position {start_time:.2f}s")
+                crop_video(video_path, output_path, start_time, actual_crop_duration)
 
 if __name__ == "__main__":
     # Parse command line arguments
