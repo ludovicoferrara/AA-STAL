@@ -104,8 +104,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     
-    # 100doh dir
-    decode_dir   = os.path.join(args.clip_dir, '_decode')
+    # Directory for decoded frames
+    decode_dir = args.clip_dir.rstrip('/') + '_decode'
     
     # Get all video files
     video_paths = glob.glob(f'{args.clip_dir}/*.mp4')
