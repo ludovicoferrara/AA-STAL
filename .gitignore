@@ -187,3 +187,5 @@ Pipfile.lock
 # Gemini/MotionBench outputs
 gemini_answer_motionbench_*.json
 gemini_answer_motionbench.json
+
+GroundingDINO/
