@@ -27,11 +27,11 @@ This script has been modified to use:
 """
 
 from utils_detectron2 import DefaultPredictor_Lazy
-from vitpose_model import ViTPoseModel
+# from vitpose_model import ViTPoseModel
 
 # hands23
-sys.path.append('src/third-party/hands23_beta')
-from hands23_demo import init_hands23, inference_hands23
+# sys.path.append('src/third-party/hands23_beta')
+# from hands23_demo import init_hands23, inference_hands23
 
 # sam2
 from sam2.build_sam import build_sam2
@@ -1077,10 +1077,10 @@ if __name__ == '__main__':
         detector       = DefaultPredictor_Lazy(detectron2_cfg)
 
     # keypoint detector
-    cpm = ViTPoseModel(device)
+    # cpm = ViTPoseModel(device)
     
     # hands23 detector
-    hands23_model = init_hands23()
+    # hands23_model = init_hands23()
     
     # sam2
     sam2_checkpoint = "./saved_models/sam2_models/sam2.1_hiera_small.pt"
@@ -1541,93 +1541,107 @@ if __name__ == '__main__':
             pred_scores = np.ones((pred_bboxes.shape[0], 1), dtype=np.float32) # 确保为float32
             
 
-            # Detect human keypoints for each person
-            img_uint8 = img.astype(np.uint8)
-            pred_bboxes_float32 = pred_bboxes.astype(np.float32)
-            pred_scores_float32 = pred_scores.astype(np.float32)
+            # # Detect human keypoints for each person
+            # img_uint8 = img.astype(np.uint8)
+            # pred_bboxes_float32 = pred_bboxes.astype(np.float32)
+            # pred_scores_float32 = pred_scores.astype(np.float32)
             
-            with torch.cuda.amp.autocast(enabled=False):
-                vitposes_out = cpm.predict_pose(
-                    img_uint8,
-                    [np.concatenate([pred_bboxes_float32, pred_scores_float32], axis=1)],
-                )
+            # with torch.cuda.amp.autocast(enabled=False):
+            #     vitposes_out = cpm.predict_pose(
+            #         img_uint8,
+            #         [np.concatenate([pred_bboxes_float32, pred_scores_float32], axis=1)],
+            #     )
 
-            # hands23 det
-            with torch.cuda.amp.autocast(enabled=False):
-                hand23_res = inference_hands23(hands23_model, img_cv2)
+            # # hands23 det
+            # with torch.cuda.amp.autocast(enabled=False):
+            #     hand23_res = inference_hands23(hands23_model, img_cv2)
             
 
+            # count_hands = 0
+            # bodyhands_res = {}
+            # matched_hand_ids = []
+            # # Use hands based on hand keypoint detections
+            # for _, (b_idx, body_bbox, vitposes) in enumerate(zip(object_ids, pred_bboxes, vitposes_out)):
+            #     left_hand_keyp = vitposes['keypoints'][-42:-21]
+            #     right_hand_keyp = vitposes['keypoints'][-21:]
+                                    
+            #     bodyhands_res[f'person_{b_idx:02d}'] = {}
+            #     bodyhands_res[f'person_{b_idx:02d}']['bbox'] = body_bbox.astype(int).tolist()
+
+            #     # Rejecting not confident detections
+            #     keyp = left_hand_keyp
+            #     valid = keyp[:,2] > 0.5
+            #     if sum(valid) > 3:
+            #         left_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
+            #         left_bbox = scale_bbox_within_image(left_bbox, img_width, img_height, scale=1.5)
+                    
+            #         matched_left  = match_hands(left_bbox, hand23_res, side='left_hand')
+            #         if matched_left is not None:
+            #             count_hands += 1
+            #             matched_hand_ids.append(matched_left['hand_id'])
+                
+            #             bodyhands_res[f'person_{b_idx:02d}']['left_hand'] = {}
+            #             bodyhands_res[f'person_{b_idx:02d}']['left_hand']['bbox'] = [int(item) for item in left_bbox]
+            #             h_score   = float(matched_left['hand_pred_score'])
+            #             h_side    = matched_left['hand_side']
+            #             fo_bbox   = matched_left['obj_bbox']
+            #             so_bbox   = matched_left['second_obj_bbox']
+            #             contact_state = matched_left['contact_state']
+
+            #             if fo_bbox is not None and contact_state in ['object_contact']:
+            #                 fo_bbox  = [ int(float(x)) for x in fo_bbox]
+            #                 fo_score = float(matched_left['obj_pred_score'])
+            #                 bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_1st_obj'] = fo_bbox
+                            
+            #                 # if so_bbox is not None:
+            #                 #     so_bbox  = [ int(float(x)) for x in so_bbox ]
+            #                 #     so_score = float(matched_left['sec_obj_pred_score'])
+            #                 #     bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_2nd_obj'] = so_bbox
+                
+                
+            #     # breakpoint()
+            #     keyp = right_hand_keyp
+            #     valid = keyp[:,2] > 0.5
+            #     if sum(valid) > 3:
+            #         right_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
+            #         right_bbox = scale_bbox_within_image(right_bbox, img_width, img_height, scale=1.5)
+                    
+            #         matched_right = match_hands(right_bbox, hand23_res, side='right_hand')
+            #         if matched_right is not None:
+            #             count_hands += 1
+            #             matched_hand_ids.append(matched_right['hand_id'])
+                      
+            #             bodyhands_res[f'person_{b_idx:02d}']['right_hand'] = {}
+            #             bodyhands_res[f'person_{b_idx:02d}']['right_hand']['bbox'] = [int(item) for item in right_bbox]
+            #             h_score = float(matched_right['hand_pred_score'])
+            #             h_side    = matched_right['hand_side']
+            #             fo_bbox   = matched_right['obj_bbox']
+            #             so_bbox   = matched_right['second_obj_bbox']
+            #             contact_state = matched_right['contact_state']
+
+            #             if fo_bbox is not None and contact_state in ['object_contact']:
+            #                 fo_bbox  = [ int(float(x)) for x in fo_bbox]
+            #                 fo_score = float(matched_right['obj_pred_score'])
+            #                 bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_1st_obj'] = fo_bbox
+                            
+            #                 # if so_bbox is not None:
+            #                 #     so_bbox  = [ int(float(x)) for x in so_bbox ]
+            #                 #     so_score = float(matched_right['sec_obj_pred_score'])
+            #                 #     bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_2nd_obj'] = so_bbox
+            
+            
+            
             count_hands = 0
             bodyhands_res = {}
-            matched_hand_ids = []
-            # Use hands based on hand keypoint detections
-            for _, (b_idx, body_bbox, vitposes) in enumerate(zip(object_ids, pred_bboxes, vitposes_out)):
-                left_hand_keyp = vitposes['keypoints'][-42:-21]
-                right_hand_keyp = vitposes['keypoints'][-21:]
-                                    
+            # Registra unicamente i corpi rilevati da SAM2, ignorando le mani
+            for b_idx, body_bbox in zip(object_ids, pred_bboxes):
                 bodyhands_res[f'person_{b_idx:02d}'] = {}
                 bodyhands_res[f'person_{b_idx:02d}']['bbox'] = body_bbox.astype(int).tolist()
-
-                # Rejecting not confident detections
-                keyp = left_hand_keyp
-                valid = keyp[:,2] > 0.5
-                if sum(valid) > 3:
-                    left_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-                    left_bbox = scale_bbox_within_image(left_bbox, img_width, img_height, scale=1.5)
-                    
-                    matched_left  = match_hands(left_bbox, hand23_res, side='left_hand')
-                    if matched_left is not None:
-                        count_hands += 1
-                        matched_hand_ids.append(matched_left['hand_id'])
-                
-                        bodyhands_res[f'person_{b_idx:02d}']['left_hand'] = {}
-                        bodyhands_res[f'person_{b_idx:02d}']['left_hand']['bbox'] = [int(item) for item in left_bbox]
-                        h_score   = float(matched_left['hand_pred_score'])
-                        h_side    = matched_left['hand_side']
-                        fo_bbox   = matched_left['obj_bbox']
-                        so_bbox   = matched_left['second_obj_bbox']
-                        contact_state = matched_left['contact_state']
-
-                        if fo_bbox is not None and contact_state in ['object_contact']:
-                            fo_bbox  = [ int(float(x)) for x in fo_bbox]
-                            fo_score = float(matched_left['obj_pred_score'])
-                            bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_1st_obj'] = fo_bbox
-                            
-                            # if so_bbox is not None:
-                            #     so_bbox  = [ int(float(x)) for x in so_bbox ]
-                            #     so_score = float(matched_left['sec_obj_pred_score'])
-                            #     bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_2nd_obj'] = so_bbox
-                
-                
-                # breakpoint()
-                keyp = right_hand_keyp
-                valid = keyp[:,2] > 0.5
-                if sum(valid) > 3:
-                    right_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-                    right_bbox = scale_bbox_within_image(right_bbox, img_width, img_height, scale=1.5)
-                    
-                    matched_right = match_hands(right_bbox, hand23_res, side='right_hand')
-                    if matched_right is not None:
-                        count_hands += 1
-                        matched_hand_ids.append(matched_right['hand_id'])
-                      
-                        bodyhands_res[f'person_{b_idx:02d}']['right_hand'] = {}
-                        bodyhands_res[f'person_{b_idx:02d}']['right_hand']['bbox'] = [int(item) for item in right_bbox]
-                        h_score = float(matched_right['hand_pred_score'])
-                        h_side    = matched_right['hand_side']
-                        fo_bbox   = matched_right['obj_bbox']
-                        so_bbox   = matched_right['second_obj_bbox']
-                        contact_state = matched_right['contact_state']
-
-                        if fo_bbox is not None and contact_state in ['object_contact']:
-                            fo_bbox  = [ int(float(x)) for x in fo_bbox]
-                            fo_score = float(matched_right['obj_pred_score'])
-                            bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_1st_obj'] = fo_bbox
-                            
-                            # if so_bbox is not None:
-                            #     so_bbox  = [ int(float(x)) for x in so_bbox ]
-                            #     so_score = float(matched_right['sec_obj_pred_score'])
-                            #     bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_2nd_obj'] = so_bbox
+            
+            
+            
+            
+            
             # Get tracked objects from SAM2 (ID >= 1000)
             tracked_objects = []
             if i_idx in video_segments:
