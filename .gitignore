@@ -189,3 +189,8 @@ gemini_answer_motionbench_*.json
 gemini_answer_motionbench.json
 
 GroundingDINO/
+
+*.pth
+*.pt
+
+sam2_source/
