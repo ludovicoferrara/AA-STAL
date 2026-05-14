@@ -41,7 +41,8 @@ from sam2.build_sam import build_sam2_video_predictor
 
 from kalman_filter import *
 
-from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+# from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 
 # grounded-dino v1
 from groundingdino.models import build_model
@@ -59,7 +60,9 @@ print("VGGT imported for camera motion detection")
 
 
 
-
+if torch.cuda.is_available():
+    torch.cuda.init()
+    _ = torch.tensor([0.0], device="cuda")
 
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -213,45 +216,85 @@ def chunk_into_n(lst, n):
 
 
 
-def init_qwen_model(device='cuda'):
-    """Initialize Qwen2.5-VL-32B-Instruct model with flash-attention optimization"""
-    # Check if flash-attn is available
-    # import flash_attn
-    # flash_attn_available = True
-    # print(f"Flash-attention detected: version {flash_attn.__version__}")
+# def init_qwen_model(device='cuda'):
+#     """Initialize Qwen2.5-VL-32B-Instruct model with flash-attention optimization"""
+#     # Check if flash-attn is available
+#     # import flash_attn
+#     # flash_attn_available = True
+#     # print(f"Flash-attention detected: version {flash_attn.__version__}")
     
-    # Configure model with flash-attention and memory optimizations
-    model_kwargs = {
-        "torch_dtype": torch.float16,  # Use float16 instead of bfloat16 for memory efficiency
-        # Remove device_map="auto" for distributed processing compatibility
-        "trust_remote_code": True,
-        "low_cpu_mem_usage": True,  # Reduce CPU memory usage during loading
-    }
+#     # Configure model with flash-attention and memory optimizations
+#     model_kwargs = {
+#         "torch_dtype": torch.float16,  # Use float16 instead of bfloat16 for memory efficiency
+#         # Remove device_map="auto" for distributed processing compatibility
+#         "trust_remote_code": True,
+#         "low_cpu_mem_usage": True,  # Reduce CPU memory usage during loading
+#     }
     
-    # Add flash-attention configuration
-    # model_kwargs["attn_implementation"] = "flash_attention_2"
-    # print(f"Using Flash-Attention 2 for Qwen2.5-VL-32B")
-    model_kwargs["attn_implementation"] = "sdpa"
-    print(f"Using sdpa for Qwen2.5-VL-32B")
+#     # Add flash-attention configuration
+#     # model_kwargs["attn_implementation"] = "flash_attention_2"
+#     # print(f"Using Flash-Attention 2 for Qwen2.5-VL-32B")
+#     model_kwargs["attn_implementation"] = "sdpa"
+#     print(f"Using sdpa for 2Qwen.5-VL-32B")
 
-    from transformers import Qwen2_5_VLForConditionalGeneration
+#     from transformers import Qwen2_5_VLForConditionalGeneration
     
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2.5-VL-7B-Instruct", 
-        **model_kwargs
+#     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+#         "Qwen/Qwen2.5-VL-7B-Instruct", 
+#         **model_kwargs
+#     )
+    
+#     # Additional memory optimizations
+#     if hasattr(model, 'gradient_checkpointing_enable'):
+#         model.gradient_checkpointing_enable()
+#         print(f"Gradient checkpointing enabled for memory efficiency")
+        
+#     processor = AutoProcessor.from_pretrained(
+#         "Qwen/Qwen2.5-VL-7B-Instruct",
+#         trust_remote_code=True
+#     )
+    
+#     return model, processor
+
+
+
+
+def init_qwen_model(device='cuda'):
+    """Inizializza Qwen2.5-VL-3B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
+    print("Inizializzazione di Qwen2.5-VL-3B in modalità 4-bit (INT4)...")
+    
+    # Configurazione per comprimere il modello a 4-bit
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",           # Formato ottimizzato per i pesi normalizzati
+        bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
+        bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
     )
     
-    # Additional memory optimizations
-    if hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-        print(f"Gradient checkpointing enabled for memory efficiency")
-        
+    # Passiamo alla versione da 3 Miliardi di parametri
+    model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
+    
+    # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_id,
+        quantization_config=quantization_config,
+        device_map={"": 0},
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16,
+        attn_implementation="sdpa" # Usa scaled dot-product attention nativa di PyTorch
+    )
+    
     processor = AutoProcessor.from_pretrained(
-        "Qwen/Qwen2.5-VL-7B-Instruct",
+        model_id,
         trust_remote_code=True
     )
     
+    print("Qwen2.5-VL-3B caricato con successo in 4-bit!")
     return model, processor
+
+
+
 
 
 def analyze_image_with_qwen(model, processor, image_path):
@@ -282,8 +325,10 @@ def analyze_image_with_qwen(model, processor, image_path):
     inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
     
     # Handle both regular model and DDP-wrapped model
-    device = model.device if hasattr(model, 'device') else model.module.device
-    inputs = inputs.to(device)
+    # device = model.device if hasattr(model, 'device') else model.module.device
+    # inputs = inputs.to(device)
+
+    inputs = inputs.to("cuda")
 
     with torch.no_grad():
         # Optimized generation parameters for flash-attention with reduced memory usage
@@ -328,6 +373,32 @@ def analyze_image_with_qwen(model, processor, image_path):
 
 def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
     """Initialize Grounded DINO v1 model"""
+    
+    # --- INIZIO PATCH PER TRANSFORMERS NUOVI ---
+    import transformers
+    from transformers.models.bert.modeling_bert import BertModel
+    
+    # 1. Patch per get_head_mask mancante
+    if not hasattr(BertModel, 'get_head_mask'):
+        print("Applicando monkey-patch a BertModel per compatibilità con GroundingDINO...")
+        def dummy_get_head_mask(self, attention_mask, num_hidden_layers, is_attention_chunked=False):
+            return [None] * num_hidden_layers
+        BertModel.get_head_mask = dummy_get_head_mask
+        
+    # 2. Patch per get_extended_attention_mask (risolve l'errore dtype/device)
+    if hasattr(BertModel, 'get_extended_attention_mask'):
+        # Salviamo la funzione originale
+        original_get_ext_mask = BertModel.get_extended_attention_mask
+        
+        def custom_get_ext_mask(self, attention_mask, input_shape, *args, **kwargs):
+            # GroundingDINO passa (attenzione_mask, input_shape, device).
+            # Hugging Face ora si aspetta (attenzione_mask, input_shape, dtype).
+            # Ignoriamo il device passato da GroundingDINO: HF lo capirà da solo.
+            return original_get_ext_mask(self, attention_mask, input_shape)
+            
+        BertModel.get_extended_attention_mask = custom_get_ext_mask
+    # --- FINE PATCH ---
+
     args = SLConfig.fromfile(config_path)
     args.device = device
     model = build_model(args)
