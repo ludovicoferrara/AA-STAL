@@ -216,9 +216,9 @@ def chunk_into_n(lst, n):
 def init_qwen_model(device='cuda'):
     """Initialize Qwen2.5-VL-32B-Instruct model with flash-attention optimization"""
     # Check if flash-attn is available
-    import flash_attn
-    flash_attn_available = True
-    print(f"Flash-attention detected: version {flash_attn.__version__}")
+    # import flash_attn
+    # flash_attn_available = True
+    # print(f"Flash-attention detected: version {flash_attn.__version__}")
     
     # Configure model with flash-attention and memory optimizations
     model_kwargs = {
@@ -229,9 +229,11 @@ def init_qwen_model(device='cuda'):
     }
     
     # Add flash-attention configuration
-    model_kwargs["attn_implementation"] = "flash_attention_2"
-    print(f"Using Flash-Attention 2 for Qwen2.5-VL-32B")
-        
+    # model_kwargs["attn_implementation"] = "flash_attention_2"
+    # print(f"Using Flash-Attention 2 for Qwen2.5-VL-32B")
+    model_kwargs["attn_implementation"] = "sdpa"
+    print(f"Using sdpa for Qwen2.5-VL-32B")
+
     from transformers import Qwen2_5_VLForConditionalGeneration
     
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -293,7 +295,7 @@ def analyze_image_with_qwen(model, processor, image_path):
         }
         
         # Additional optimizations for flash-attention
-        import flash_attn
+        # import flash_attn
         generation_kwargs.update({
             "output_attentions": False,  # Disable attention outputs to save memory
             "output_hidden_states": False,  # Disable hidden states
