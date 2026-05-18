@@ -1394,8 +1394,10 @@ if __name__ == '__main__':
         import torch
         torch.cuda.empty_cache()
         
-        grounded_dino_prompt = '. '.join(video_objects) + '.'
-        print(f'Grounded-DINO prompt: "{grounded_dino_prompt}"')
+        # grounded_dino_prompt = '. '.join(video_objects) + '.'
+        # print(f'Grounded-DINO prompt: "{grounded_dino_prompt}"')
+        actor_classes = "person. humanoid robot. robotic arm."
+        grounded_dino_prompt = f"{actor_classes} {'. '.join(video_objects)}."
         update_color_palette_for_video(video_objects)
         
         # Use grounded-dino to detect objects in first frame with high precision settings
@@ -1488,24 +1490,24 @@ if __name__ == '__main__':
         global_object_id_to_class = {}
         
         pred_bboxes = None
-        for i_idx, img_path in enumerate(img_ls[:1]):
-            start_img = get_cached_image(img_path, video_image_cache)
+        # for i_idx, img_path in enumerate(img_ls[:1]):
+        #     start_img = get_cached_image(img_path, video_image_cache)
             
-            # Detect humans
-            with torch.cuda.amp.autocast(enabled=False):
-                first_det_out = detector(start_img)
+        #     # Detect humans
+        #     with torch.cuda.amp.autocast(enabled=False):
+        #         first_det_out = detector(start_img)
                 
-            det_instances = first_det_out['instances']
-            valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > THD_human_det)
-            pred_bboxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy().astype(np.float32)
-            pred_scores=det_instances.scores[valid_idx].cpu().numpy().astype(np.float32)
+        #     det_instances = first_det_out['instances']
+        #     valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > THD_human_det)
+        #     pred_bboxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy().astype(np.float32)
+        #     pred_scores=det_instances.scores[valid_idx].cpu().numpy().astype(np.float32)
             
-            if len(pred_bboxes) > 0: 
-                break
+        #     if len(pred_bboxes) > 0: 
+        #         break
         
-        if pred_bboxes is None or len(pred_bboxes) == 0:
-            print('No humans detected, but continuing with object-only processing')
-            pred_bboxes = np.array([]).reshape(0, 4).astype(np.float32)  # Empty array for consistency
+        # if pred_bboxes is None or len(pred_bboxes) == 0:
+        #     print('No humans detected, but continuing with object-only processing')
+        #     pred_bboxes = np.array([]).reshape(0, 4).astype(np.float32)  # Empty array for consistency
         
         # Reuse existing predictor instead of rebuilding (major optimization)
         torch.cuda.empty_cache()
@@ -1880,7 +1882,7 @@ if __name__ == '__main__':
         sam2_propagation_start = time.time()
         
         # Check if we have any objects to track
-        has_objects_to_track = len(pred_bboxes) > 0
+        has_objects_to_track = len(first_frame_objects) > 0
         
         if not has_objects_to_track:
             print("No humans or objects to track, skipping SAM2 propagation")
