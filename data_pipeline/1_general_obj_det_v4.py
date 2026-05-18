@@ -1385,6 +1385,14 @@ if __name__ == '__main__':
         else:
             print(f'Skipping video: No frames available')
             continue
+
+        print("Scaricando Qwen dalla VRAM per fare spazio a SAM2...")
+        del qwen_model
+        del qwen_processor
+        import gc
+        gc.collect()
+        import torch
+        torch.cuda.empty_cache()
         
         grounded_dino_prompt = '. '.join(video_objects) + '.'
         print(f'Grounded-DINO prompt: "{grounded_dino_prompt}"')
