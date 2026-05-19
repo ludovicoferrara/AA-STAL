@@ -26,7 +26,7 @@ This script has been modified to use:
 3. The original hand and hand-object detection pipeline remains unchanged
 """
 
-# from utils_detectron2 import DefaultPredictor_Lazy
+from utils_detectron2 import DefaultPredictor_Lazy
 # from vitpose_model import ViTPoseModel
 
 # hands23
@@ -1072,7 +1072,7 @@ if __name__ == '__main__':
     
     cur_parser.add_argument('--chunk_num', type=int, default=10, help='split videos into chunks')
     cur_parser.add_argument('--chunk_idx', type=int, default=0, help='which chunk to process (use -1 to process all videos)')
-    # cur_parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
+    cur_parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
     
     # VGGT Camera Motion Detection Arguments
     cur_parser.add_argument('--enable_camera_motion_detection', action='store_true', 
@@ -1133,21 +1133,21 @@ if __name__ == '__main__':
             print(f"GPU {device_idx} Memory: {total_mem:.2f}GB total, {reserved_mem:.2f}GB reserved, {allocated_mem:.2f}GB allocated")
     
     # Load detector
-    # if cur_args.body_detector == 'vitdet':
-    #     from detectron2.config import LazyConfig
-    #     cfg_path = f'configs/cascade_mask_rcnn_vitdet_h_75ep.py'
-    #     detectron2_cfg = LazyConfig.load(str(cfg_path))
-    #     detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
-    #     for i in range(3):
-    #         detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
-    #     detector = DefaultPredictor_Lazy(detectron2_cfg)
-    # elif cur_args.body_detector == 'regnety':
-    #     from detectron2 import model_zoo
-    #     from detectron2.config import get_cfg
-    #     detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
-    #     detectron2_cfg.model.roi_heads.box_predictor.test_score_thresh = 0.5
-    #     detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
-    #     detector       = DefaultPredictor_Lazy(detectron2_cfg)
+    if cur_args.body_detector == 'vitdet':
+        from detectron2.config import LazyConfig
+        cfg_path = f'configs/cascade_mask_rcnn_vitdet_h_75ep.py'
+        detectron2_cfg = LazyConfig.load(str(cfg_path))
+        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
+        for i in range(3):
+            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
+        detector = DefaultPredictor_Lazy(detectron2_cfg)
+    elif cur_args.body_detector == 'regnety':
+        from detectron2 import model_zoo
+        from detectron2.config import get_cfg
+        detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
+        detectron2_cfg.model.roi_heads.box_predictor.test_score_thresh = 0.5
+        detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
+        detector       = DefaultPredictor_Lazy(detectron2_cfg)
 
     # keypoint detector
     # cpm = ViTPoseModel(device)
@@ -1372,107 +1372,166 @@ if __name__ == '__main__':
         
         # Object Analysis and Detection
         object_analysis_start = time.time()
-        print_step_header("Analyzing first frame objects", 1)
+        # print_step_header("Analyzing first frame objects", 1)
         
-        if len(img_ls) > 0:
-            video_objects = analyze_image_with_qwen(qwen_model, qwen_processor, img_ls[0])
-            print(f'Objects: {video_objects}')
+        # if len(img_ls) > 0:
+        #     video_objects = analyze_image_with_qwen(qwen_model, qwen_processor, img_ls[0])
+        #     print(f'Objects: {video_objects}')
             
-            # Skip video if fewer than 3 objects detected
-            if len(video_objects) < 3:
-                print(f'Skipping video: Fewer than 3 objects detected ({len(video_objects)} objects found)')
-                continue
-        else:
-            print(f'Skipping video: No frames available')
-            continue
+        #     # Skip video if fewer than 3 objects detected
+        #     if len(video_objects) < 3:
+        #         print(f'Skipping video: Fewer than 3 objects detected ({len(video_objects)} objects found)')
+        #         continue
+        # else:
+        #     print(f'Skipping video: No frames available')
+        #     continue
 
-        print("Scaricando Qwen dalla VRAM per fare spazio a SAM2...")
-        del qwen_model
-        del qwen_processor
-        import gc
-        gc.collect()
-        import torch
-        torch.cuda.empty_cache()
+        # print("Scaricando Qwen dalla VRAM per fare spazio a SAM2...")
+        # del qwen_model
+        # del qwen_processor
+        # import gc
+        # gc.collect()
+        # import torch
+        # torch.cuda.empty_cache()
         
         # grounded_dino_prompt = '. '.join(video_objects) + '.'
         # print(f'Grounded-DINO prompt: "{grounded_dino_prompt}"')
-        actor_classes = "person. humanoid robot. robotic arm."
-        grounded_dino_prompt = f"{actor_classes} {'. '.join(video_objects)}."
-        update_color_palette_for_video(video_objects)
+        # update_color_palette_for_video(video_objects)
         
-        # Use grounded-dino to detect objects in first frame with high precision settings
+        # # Use grounded-dino to detect objects in first frame with high precision settings
+        # first_frame_objects = []
+        # if len(img_ls) > 0:
+        #     first_img = get_cached_image(img_ls[0], video_image_cache)
+        #     print(f'First image shape: {first_img.shape}')
+        #     with torch.cuda.amp.autocast(enabled=False):
+        #         obj_bboxes, obj_phrases, obj_scores = detect_objects_with_grounded_dino(
+        #             grounded_dino_model, grounded_dino_transform, first_img, 
+        #             grounded_dino_prompt, box_threshold=0.25, text_threshold=0.2, device=device
+        #         )
+            
+        #     print(f'Grounded-DINO raw results: {len(obj_bboxes)} detections')
+            
+        #     for obj_bbox, obj_phrase, obj_score in zip(obj_bboxes, obj_phrases, obj_scores):
+        #         if get_bbox_area(obj_bbox) > 200:
+        #             class_name = obj_phrase.strip().lower()
+        #             matched_object = None
+        #             best_similarity = 0
+                    
+        #             for video_obj in video_objects:
+        #                 video_obj_clean = video_obj.strip().lower()
+        #                 similarity = 0
+                        
+        #                 if class_name == video_obj_clean:
+        #                     similarity = 1.0
+        #                 elif (class_name in video_obj_clean and 
+        #                       len(class_name) > 3 and
+        #                       (class_name + ' ' in video_obj_clean or 
+        #                        ' ' + class_name in video_obj_clean or
+        #                        class_name == video_obj_clean)):
+        #                     similarity = 0.9
+        #                 elif (video_obj_clean in class_name and 
+        #                       len(video_obj_clean) > 3 and
+        #                       (video_obj_clean + ' ' in class_name or 
+        #                        ' ' + video_obj_clean in class_name or
+        #                        class_name == video_obj_clean)):
+        #                     similarity = 0.8
+        #                 elif (len(class_name) > 4 and len(video_obj_clean) > 4):
+        #                     if (class_name.startswith(video_obj_clean[:4]) or 
+        #                         video_obj_clean.startswith(class_name[:4])):
+        #                         similarity = 0.6
+                        
+        #                 if similarity > best_similarity and similarity > 0.5:
+        #                     best_similarity = similarity
+        #                     matched_object = video_obj_clean
+                    
+        #             if matched_object and obj_score > 0.3 and best_similarity > 0.5:
+        #                 all_indices = [i for i, obj in enumerate(video_objects) if obj.strip().lower() == matched_object]
+        #                 existing_objects = [obj['class_name'] for obj in first_frame_objects]
+        #                 object_count = existing_objects.count(matched_object)
+                        
+        #                 if object_count < len(all_indices):
+        #                     class_id = all_indices[object_count] + 200
+        #                 else:
+        #                     class_id = video_objects.index(matched_object) + 200
+                            
+        #                 first_frame_objects.append({
+        #                     'bbox': obj_bbox,
+        #                     'class_name': matched_object,
+        #                     'class_id': class_id,
+        #                     'confidence': obj_score,
+        #                     'match_quality': best_similarity
+        #                 })
+            
+        #     first_frame_objects = filter_and_deduplicate_objects(first_frame_objects, 
+        #                                                          confidence_threshold=0.25, 
+        #                                                          iou_threshold=0.5)
+            
+        #     print(f'First frame objects: {len(first_frame_objects)}')
+
+        # --- NEW ACTOR-CENTRIC ---
+        print_step_header("Detecting Actors in first frame", 1)
+
+        # who can act
+        actor_classes = ["person", "humanoid robot", "robotic arm"]
+        update_color_palette_for_video(actor_classes)
+
         first_frame_objects = []
         if len(img_ls) > 0:
             first_img = get_cached_image(img_ls[0], video_image_cache)
-            print(f'First image shape: {first_img.shape}')
+            img_height, img_width, _ = first_img.shape
+
+            # --- HUMAN-CENTRIC DETECTION WITH DETECTRON2 ---
             with torch.cuda.amp.autocast(enabled=False):
-                obj_bboxes, obj_phrases, obj_scores = detect_objects_with_grounded_dino(
+                d2_out = detector(first_img)
+            
+            det_instances = d2_out['instances']
+            valid_human_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.70)
+            human_bboxes = det_instances.pred_boxes.tensor[valid_human_idx].cpu().numpy().astype(np.float32)
+            human_scores = det_instances.scores[valid_human_idx].cpu().numpy().astype(np.float32)
+            
+            for bbox, score in zip(human_bboxes, human_scores):
+                if get_bbox_area(bbox) > 500:
+                    first_frame_objects.append({
+                        'bbox': bbox.tolist(),
+                        'class_name': 'person',
+                        'class_id': 200,  # ID mappato per person
+                        'confidence': float(score)
+                    })
+
+
+            # --- 2. ROBOT DETECTION WITH GROUNDED-DINO ---
+            with torch.cuda.amp.autocast(enabled=False):
+                r_bboxes, r_phrases, r_scores = detect_objects_with_grounded_dino(
                     grounded_dino_model, grounded_dino_transform, first_img, 
-                    grounded_dino_prompt, box_threshold=0.25, text_threshold=0.2, device=device
+                    "humanoid robot. robotic arm.", box_threshold=0.45, text_threshold=0.35, device=device
                 )
             
-            print(f'Grounded-DINO raw results: {len(obj_bboxes)} detections')
+            for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
+                name = phrase.strip().lower()
+                if get_bbox_area(bbox) > 500 and name in ["humanoid robot", "robotic arm"]:
+                    class_id = 201 if "humanoid" in name else 202
+                    first_frame_objects.append({
+                        'bbox': bbox,
+                        'class_name': name,
+                        'class_id': class_id,
+                        'confidence': float(score)
+                    })
             
-            for obj_bbox, obj_phrase, obj_score in zip(obj_bboxes, obj_phrases, obj_scores):
-                if get_bbox_area(obj_bbox) > 200:
-                    class_name = obj_phrase.strip().lower()
-                    matched_object = None
-                    best_similarity = 0
-                    
-                    for video_obj in video_objects:
-                        video_obj_clean = video_obj.strip().lower()
-                        similarity = 0
-                        
-                        if class_name == video_obj_clean:
-                            similarity = 1.0
-                        elif (class_name in video_obj_clean and 
-                              len(class_name) > 3 and
-                              (class_name + ' ' in video_obj_clean or 
-                               ' ' + class_name in video_obj_clean or
-                               class_name == video_obj_clean)):
-                            similarity = 0.9
-                        elif (video_obj_clean in class_name and 
-                              len(video_obj_clean) > 3 and
-                              (video_obj_clean + ' ' in class_name or 
-                               ' ' + video_obj_clean in class_name or
-                               class_name == video_obj_clean)):
-                            similarity = 0.8
-                        elif (len(class_name) > 4 and len(video_obj_clean) > 4):
-                            if (class_name.startswith(video_obj_clean[:4]) or 
-                                video_obj_clean.startswith(class_name[:4])):
-                                similarity = 0.6
-                        
-                        if similarity > best_similarity and similarity > 0.5:
-                            best_similarity = similarity
-                            matched_object = video_obj_clean
-                    
-                    if matched_object and obj_score > 0.3 and best_similarity > 0.5:
-                        all_indices = [i for i, obj in enumerate(video_objects) if obj.strip().lower() == matched_object]
-                        existing_objects = [obj['class_name'] for obj in first_frame_objects]
-                        object_count = existing_objects.count(matched_object)
-                        
-                        if object_count < len(all_indices):
-                            class_id = all_indices[object_count] + 200
-                        else:
-                            class_id = video_objects.index(matched_object) + 200
-                            
-                        first_frame_objects.append({
-                            'bbox': obj_bbox,
-                            'class_name': matched_object,
-                            'class_id': class_id,
-                            'confidence': obj_score,
-                            'match_quality': best_similarity
-                        })
+            first_frame_objects = filter_and_deduplicate_objects(
+                first_frame_objects, confidence_threshold=0.40, iou_threshold=0.45
+            )
             
-            first_frame_objects = filter_and_deduplicate_objects(first_frame_objects, 
-                                                                 confidence_threshold=0.25, 
-                                                                 iou_threshold=0.5)
-            
-            print(f'First frame objects: {len(first_frame_objects)}')
-            
-            if not first_frame_objects:
-                print(f'No objects detected in first frame')
+            print(f"Actors successfully initialized: {len(first_frame_objects)}")
+            for act in first_frame_objects:
+                print(f"  -> {act['class_name']} (Conf: {act['confidence']:.2f}) at {act['bbox']}")
         
+        if not first_frame_objects:
+            print(f"Skipping video {video_name}: No valid actors found in the first frame.")
+            os.makedirs(finished_path, exist_ok=True)
+            continue
+        
+        # FINISH NEW ACTOR-CENTRIC
+
         object_analysis_time = time.time() - object_analysis_start
         timing_stats['object_analysis_detection'] += object_analysis_time
         
@@ -1489,7 +1548,7 @@ if __name__ == '__main__':
         
         global_object_id_to_class = {}
         
-        pred_bboxes = None
+        # pred_bboxes = None
         # for i_idx, img_path in enumerate(img_ls[:1]):
         #     start_img = get_cached_image(img_path, video_image_cache)
             
@@ -1560,9 +1619,10 @@ if __name__ == '__main__':
             print(f"Final global_object_id_to_class mapping: {global_object_id_to_class}")
 
             # Check if we have any objects to track before propagation
-            total_objects = len(pred_bboxes) + len(first_frame_objects)
+            # total_objects = len(pred_bboxes) + len(first_frame_objects)
             
-            if total_objects == 0:
+            # if total_objects == 0:
+            if first_frame_objects == 0:
                 print("No objects added to SAM2 tracker, skipping propagation")
                 video_segments = {}  # Empty dictionary for consistency
                 tracking_success = True
@@ -2101,7 +2161,7 @@ if __name__ == '__main__':
             
             drawing_objects = []
             
-            for (name, bbox) in bbox_ls:
+            # for (name, bbox) in bbox_ls:
                 # if name in ['person', 'left_hand', 'right_hand', 'object_in_left_hand', 'object_in_right_hand']:
                 #     drawing_objects.append((name, bbox))
             
