@@ -1,33 +1,19 @@
 import os
 import glob
-import random
 import subprocess
-import json
 import argparse
 from tqdm import tqdm
-
-def get_video_duration(video_path):
-    """Get the duration of a video using ffprobe"""
-    cmd = [
-        "ffprobe", 
-        "-v", "error", 
-        "-show_entries", "format=duration", 
-        "-of", "json", 
-        video_path
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    data = json.loads(result.stdout)
-    return float(data['format']['duration'])
+from scenedetect import detect, ContentDetector
 
 def crop_video(video_path, output_path, start_time, duration):
-    """Crop a segment from a video"""
+    """Estrae un segmento video ricodificandolo per garantire keyframe precisi"""
     cmd = [
         "ffmpeg",
+        "-y",  # Sovrascrive automaticamente i file esistenti
         "-loglevel", "error",
+        "-ss", str(start_time),  # Posizionato prima dell'input per fast-seeking
         "-i", video_path,
-        "-ss", str(start_time),
         "-t", str(duration),
-        # Re-encode for compatibility to ensure valid keyframes and timestamps
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
         "-c:a", "aac", "-b:a", "128k",
         output_path
@@ -35,14 +21,13 @@ def crop_video(video_path, output_path, start_time, duration):
     subprocess.run(cmd)
 
 def chunk_into_n(lst, n):
-    """Divide list into n chunks as evenly as possible"""
+    """Suddivide la lista in n chunk"""
     chunk_size = len(lst) // n
     remainder = len(lst) % n
     
     chunks = []
     start = 0
     for i in range(n):
-        # Add one extra item to the first 'remainder' chunks
         end = start + chunk_size + (1 if i < remainder else 0)
         chunks.append(lst[start:end])
         start = end
@@ -50,84 +35,74 @@ def chunk_into_n(lst, n):
     return chunks
 
 def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
-    """Process all videos in the input directory"""
-    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    # Get all video files (assuming mp4, but can be extended)
     video_files = glob.glob(os.path.join(input_dir, "*.mp4"))
     video_files.extend(glob.glob(os.path.join(input_dir, "*.avi")))
     video_files.extend(glob.glob(os.path.join(input_dir, "*.mov")))
-    
-    # Sort for consistent chunking across runs
     video_files.sort()
     
-    # Handle chunking
     if chunk_idx is not None and chunk_num is not None:
         video_chunks = chunk_into_n(video_files, chunk_num)
         if chunk_idx >= len(video_chunks):
-            print(f"Chunk {chunk_idx} is out of range (total chunks: {len(video_chunks)})")
+            print(f"Errore: Chunk {chunk_idx} fuori range (totale: {len(video_chunks)})")
             return
         video_files = video_chunks[chunk_idx]
-        print(f"Processing chunk {chunk_idx}/{chunk_num-1} with {len(video_files)} videos")
+        print(f"Elaborazione chunk {chunk_idx}/{chunk_num-1}: {len(video_files)} video")
     else:
-        print(f"Found {len(video_files)} videos to process")
+        print(f"Trovati {len(video_files)} video da elaborare")
     
     for video_path in tqdm(video_files):
-        # Get video filename
         video_name = os.path.basename(video_path)
-        output_path = os.path.join(output_dir, video_name)
+        base_name = os.path.splitext(video_name)[0]
         
-        # Get video duration
-        duration = get_video_duration(video_path)
+        # 1. Rilevamento dei cambi di inquadratura (Cut detection)
+        # ContentDetector(threshold=27.0) è il valore di default ottimale
+        scene_list = detect(video_path, ContentDetector())
         
-        if duration <= 5.0:
-            # If video is shorter than 5s, copy it directly
-            print(f"Video {video_name} is {duration:.2f}s (≤5s), copying directly")
-            cmd = ["cp", video_path, output_path]
-            subprocess.run(cmd)
-        else:
-            # Choose a random duration between 5-10s
-            crop_duration = random.uniform(5.0, min(10.0, duration))
+        if not scene_list:
+            print(f"Nessuna scena rilevata in {video_name} o file illeggibile.")
+            continue
             
-            # Calculate number of segments using integer division
-            num_segments = int(duration // crop_duration)
+        print(f"Video {video_name}: trovate {len(scene_list)} scene.")
+        
+        # 2. Filtraggio temporale ed estrazione
+        valid_scenes = 0
+        for i, scene in enumerate(scene_list):
+            start_sec = scene[0].seconds
+            end_sec = scene[1].seconds
+            duration = end_sec - start_sec
             
-            if num_segments == 0:
-                # If no full segments fit, crop one segment anyway (edge case)
-                num_segments = 1
-                crop_duration = min(crop_duration, duration)
-            
-            print(f"Video {video_name} is {duration:.2f}s, extracting {num_segments} segments of {crop_duration:.2f}s each")
-            
-            for i in range(num_segments):
-                # Consecutive segments starting from 0
-                start_time = i * crop_duration
+            # Regola 1: Scarta se minore di 3 secondi
+            if duration < 3.0:
+                continue
                 
-                # Ensure the last segment doesn't exceed video duration
-                actual_crop_duration = min(crop_duration, duration - start_time)
+            # Regola 2: Conserva integralmente se tra 3 e 10 secondi
+            elif duration <= 10.0:
+                final_start = start_sec
+                final_duration = duration
                 
-                # Create output filename with part suffix
-                base_name = os.path.splitext(video_name)[0]
-                output_name = f"{base_name}_part{i+1}.mp4"
-                output_path = os.path.join(output_dir, output_name)
+            # Regola 3: Estrai i 6 secondi centrali se maggiore di 10 secondi
+            else:
+                center_time = start_sec + (duration / 2.0)
+                final_start = center_time - 3.0
+                final_duration = 6.0
                 
-                print(f"  Cropping segment {i+1}: {actual_crop_duration:.2f}s from position {start_time:.2f}s")
-                crop_video(video_path, output_path, start_time, actual_crop_duration)
+            valid_scenes += 1
+            output_name = f"{base_name}_scene{i+1}.mp4"
+            output_path = os.path.join(output_dir, output_name)
+            
+            crop_video(video_path, output_path, final_start, final_duration)
+            
+        print(f"  -> Salvate {valid_scenes} clip valide su {len(scene_list)} totali.")
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Crop videos to 5-10 second segments')
-    parser.add_argument('--in_dir', type=str, default='/path/to/Videos',
-                        help='Directory containing input videos')
-    parser.add_argument('--out_dir', type=str, default='/path/to/Videos_crop',
-                        help='Directory to save cropped videos')
-    parser.add_argument('--chunk_idx', type=int, default=None,
-                        help='Chunk index to process (for parallel processing)')
-    parser.add_argument('--chunk_num', type=int, default=None,
-                        help='Total number of chunks (for parallel processing)')
+    parser = argparse.ArgumentParser(description='Crop videos based on scene detection and temporal thresholds')
+    parser.add_argument('--in_dir', type=str, default='/path/to/Videos', help='Directory input video')
+    parser.add_argument('--out_dir', type=str, default='/path/to/Videos_crop', help='Directory output video')
+    parser.add_argument('--chunk_idx', type=int, default=None, help='Indice del chunk')
+    parser.add_argument('--chunk_num', type=int, default=None, help='Numero totale di chunk')
     args = parser.parse_args()
     
-    # Process videos
     process_videos(args.in_dir, args.out_dir, args.chunk_idx, args.chunk_num)
-    print(f"Processing complete. Cropped videos saved to {args.out_dir}")
+    print(f"Elaborazione completata. Video salvati in: {args.out_dir}")
