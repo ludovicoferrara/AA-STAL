@@ -259,116 +259,116 @@ def chunk_into_n(lst, n):
 
 
 
-def init_qwen_model(device='cuda'):
-    """Inizializza Qwen2.5-VL-3B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
-    print("Inizializzazione di Qwen2.5-VL-3B in modalità 4-bit (INT4)...")
+# def init_qwen_model(device='cuda'):
+#     """Inizializza Qwen2.5-VL-3B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
+#     print("Inizializzazione di Qwen2.5-VL-3B in modalità 4-bit (INT4)...")
     
-    # Configurazione per comprimere il modello a 4-bit
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",           # Formato ottimizzato per i pesi normalizzati
-        bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
-        bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
-    )
+#     # Configurazione per comprimere il modello a 4-bit
+#     quantization_config = BitsAndBytesConfig(
+#         load_in_4bit=True,
+#         bnb_4bit_quant_type="nf4",           # Formato ottimizzato per i pesi normalizzati
+#         bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
+#         bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
+#     )
     
-    # Passiamo alla versione da 3 Miliardi di parametri
-    model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
+#     # Passiamo alla versione da 3 Miliardi di parametri
+#     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     
-    # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_id,
-        quantization_config=quantization_config,
-        device_map={"": 0},
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.float16,
-        attn_implementation="sdpa" # Usa scaled dot-product attention nativa di PyTorch
-    )
+#     # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
+#     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+#         model_id,
+#         quantization_config=quantization_config,
+#         device_map={"": 0},
+#         trust_remote_code=True,
+#         low_cpu_mem_usage=True,
+#         torch_dtype=torch.float16,
+#         attn_implementation="sdpa" # Usa scaled dot-product attention nativa di PyTorch
+#     )
     
-    processor = AutoProcessor.from_pretrained(
-        model_id,
-        trust_remote_code=True
-    )
+#     processor = AutoProcessor.from_pretrained(
+#         model_id,
+#         trust_remote_code=True
+#     )
     
-    print("Qwen2.5-VL-3B caricato con successo in 4-bit!")
-    return model, processor
+#     print("Qwen2.5-VL-3B caricato con successo in 4-bit!")
+#     return model, processor
 
 
 
 
 
-def analyze_image_with_qwen(model, processor, image_path):
-    """Analyze objects in image using Qwen2.5-VL-32B-Instruct"""
-    # Clear CUDA cache before processing to free up memory
-    torch.cuda.empty_cache()
+# def analyze_image_with_qwen(model, processor, image_path):
+    # """Analyze objects in image using Qwen2.5-VL-32B-Instruct"""
+    # # Clear CUDA cache before processing to free up memory
+    # torch.cuda.empty_cache()
     
-    # Resize image to save memory
-    image = Image.open(image_path).convert('RGB')
-    max_size = 512  # Limit max dimension to 512px
-    if max(image.size) > max_size:
-        ratio = max_size / max(image.size)
-        new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-        image = image.resize(new_size, Image.LANCZOS)
-        print(f"Resized image from {image.size} to {new_size} to save memory")
+    # # Resize image to save memory
+    # image = Image.open(image_path).convert('RGB')
+    # max_size = 512  # Limit max dimension to 512px
+    # if max(image.size) > max_size:
+    #     ratio = max_size / max(image.size)
+    #     new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+    #     image = image.resize(new_size, Image.LANCZOS)
+    #     print(f"Resized image from {image.size} to {new_size} to save memory")
         
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": "Please list the clearly visible objects you can identify in this image, excluding hands and people. Separate each object with a comma, for example: table, chair, cup, bottle, book, phone, computer, bowl, knife, spoon, etc."}
-        ]
-    }]
+    # messages = [{
+    #     "role": "user",
+    #     "content": [
+    #         {"type": "image", "image": image},
+    #         {"type": "text", "text": "Please list the clearly visible objects you can identify in this image, excluding hands and people. Separate each object with a comma, for example: table, chair, cup, bottle, book, phone, computer, bowl, knife, spoon, etc."}
+    #     ]
+    # }]
 
-    from qwen_vl_utils import process_vision_info
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = process_vision_info(messages)
-    inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+    # from qwen_vl_utils import process_vision_info
+    # text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # image_inputs, video_inputs = process_vision_info(messages)
+    # inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
     
-    # Handle both regular model and DDP-wrapped model
-    # device = model.device if hasattr(model, 'device') else model.module.device
-    # inputs = inputs.to(device)
+    # # Handle both regular model and DDP-wrapped model
+    # # device = model.device if hasattr(model, 'device') else model.module.device
+    # # inputs = inputs.to(device)
 
-    inputs = inputs.to("cuda")
+    # inputs = inputs.to("cuda")
 
-    with torch.no_grad():
-        # Optimized generation parameters for flash-attention with reduced memory usage
-        generation_kwargs = {
-            "max_new_tokens": 64,  # Reduced from 128 to save memory
-            "do_sample": False,
-            "pad_token_id": processor.tokenizer.eos_token_id,
-            "use_cache": True,  # Enable KV cache for faster generation
-        }
+    # with torch.no_grad():
+    #     # Optimized generation parameters for flash-attention with reduced memory usage
+    #     generation_kwargs = {
+    #         "max_new_tokens": 64,  # Reduced from 128 to save memory
+    #         "do_sample": False,
+    #         "pad_token_id": processor.tokenizer.eos_token_id,
+    #         "use_cache": True,  # Enable KV cache for faster generation
+    #     }
         
-        # Additional optimizations for flash-attention
-        # import flash_attn
-        generation_kwargs.update({
-            "output_attentions": False,  # Disable attention outputs to save memory
-            "output_hidden_states": False,  # Disable hidden states
-        })
+    #     # Additional optimizations for flash-attention
+    #     # import flash_attn
+    #     generation_kwargs.update({
+    #         "output_attentions": False,  # Disable attention outputs to save memory
+    #         "output_hidden_states": False,  # Disable hidden states
+    #     })
         
-        # Handle both regular model and DDP-wrapped model
-        if hasattr(model, 'generate'):
-            generated_ids = model.generate(**inputs, **generation_kwargs)
-        elif hasattr(model, 'module') and hasattr(model.module, 'generate'):
-            generated_ids = model.module.generate(**inputs, **generation_kwargs)
-        else:
-            raise RuntimeError("Model does not have generate method")
+    #     # Handle both regular model and DDP-wrapped model
+    #     if hasattr(model, 'generate'):
+    #         generated_ids = model.generate(**inputs, **generation_kwargs)
+    #     elif hasattr(model, 'module') and hasattr(model.module, 'generate'):
+    #         generated_ids = model.module.generate(**inputs, **generation_kwargs)
+    #     else:
+    #         raise RuntimeError("Model does not have generate method")
     
-    generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-    output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    # generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+    # output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
     
-    # Aggressively clean GPU memory
-    del inputs, generated_ids, generated_ids_trimmed, image, messages, text
-    torch.cuda.empty_cache()  # Always clear cache after processing
+    # # Aggressively clean GPU memory
+    # del inputs, generated_ids, generated_ids_trimmed, image, messages, text
+    # torch.cuda.empty_cache()  # Always clear cache after processing
     
-    if output_text and output_text[0]:
-        objects = [obj.strip().lower() for obj in output_text[0].strip().split(',')]
-        object_names = [obj for obj in objects if obj and len(obj) > 1]
-        if not object_names:
-            raise RuntimeError("Qwen model returned empty object list")
-        return object_names
+    # if output_text and output_text[0]:
+    #     objects = [obj.strip().lower() for obj in output_text[0].strip().split(',')]
+    #     object_names = [obj for obj in objects if obj and len(obj) > 1]
+    #     if not object_names:
+    #         raise RuntimeError("Qwen model returned empty object list")
+    #     return object_names
     
-    raise RuntimeError("Qwen model returned empty response")
+    # raise RuntimeError("Qwen model returned empty response")
 
 
 def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
@@ -1083,8 +1083,8 @@ if __name__ == '__main__':
                            help='Number of frames to sample for camera motion detection (default: 4, reduced for memory)')
     
     # Memory optimization arguments
-    cur_parser.add_argument('--disable_qwen', action='store_true', 
-                           help='Disable Qwen2-VL-72B model to save GPU memory (will use fallback objects)')
+    # cur_parser.add_argument('--disable_qwen', action='store_true', 
+    #                        help='Disable Qwen2-VL-72B model to save GPU memory (will use fallback objects)')
     cur_parser.add_argument('--max_video_frames', type=int, default=300,
                            help='Skip videos with more than this many frames (default: 300, reduced from 500)')
     
@@ -1163,7 +1163,7 @@ if __name__ == '__main__':
         warnings.filterwarnings("ignore")
         torch.autocast(device_type='cuda', dtype=torch.float16).__enter__()
     
-    sam2            = build_sam2(model_cfg, sam2_checkpoint, device ='cuda', apply_postprocessing=False)
+    sam2 = build_sam2(model_cfg, sam2_checkpoint, device ='cuda', apply_postprocessing=False)
     # sam2 image model
     image_predictor = SAM2ImagePredictor(sam2)
     # sam video model
@@ -1178,14 +1178,14 @@ if __name__ == '__main__':
     # Models
     print("Loading models...")
     
-    if cur_args.disable_qwen:
-        print("Qwen2-VL-72B model disabled to save GPU memory")
-        qwen_model, qwen_processor = None, None
-    else:
-        print("Loading Qwen2-VL-72B model...")
-        qwen_model, qwen_processor = init_qwen_model(device)
-        if qwen_model is not None and accelerator is not None:
-            qwen_model = accelerator.prepare(qwen_model)
+    # if cur_args.disable_qwen:
+    #     print("Qwen2-VL-72B model disabled to save GPU memory")
+    #     qwen_model, qwen_processor = None, None
+    # else:
+    #     print("Loading Qwen2-VL-72B model...")
+    #     qwen_model, qwen_processor = init_qwen_model(device)
+    #     if qwen_model is not None and accelerator is not None:
+    #         qwen_model = accelerator.prepare(qwen_model)
     
     grounded_dino_config = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
     grounded_dino_checkpoint = "GroundingDINO/weights/groundingdino_swint_ogc.pth"
@@ -1472,7 +1472,7 @@ if __name__ == '__main__':
         print_step_header("Detecting Actors in first frame", 1)
 
         # who can act
-        actor_classes = ["person", "humanoid robot", "robotic arm"]
+        actor_classes = ["person", "humanoid_robot", "robotic arm"]
         update_color_palette_for_video(actor_classes)
 
         first_frame_objects = []
@@ -1503,12 +1503,12 @@ if __name__ == '__main__':
             with torch.cuda.amp.autocast(enabled=False):
                 r_bboxes, r_phrases, r_scores = detect_objects_with_grounded_dino(
                     grounded_dino_model, grounded_dino_transform, first_img, 
-                    "humanoid robot. robotic arm.", box_threshold=0.45, text_threshold=0.35, device=device
+                    "humanoid_robot. robotic_arm.", box_threshold=0.45, text_threshold=0.35, device=device
                 )
             
             for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
                 name = phrase.strip().lower()
-                if get_bbox_area(bbox) > 500 and name in ["humanoid robot", "robotic arm"]:
+                if get_bbox_area(bbox) > 500 and name in ["humanoid_robot", "robotic arm"]:
                     class_id = 201 if "humanoid" in name else 202
                     first_frame_objects.append({
                         'bbox': bbox,
