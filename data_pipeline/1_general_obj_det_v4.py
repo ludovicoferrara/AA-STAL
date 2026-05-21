@@ -27,11 +27,6 @@ This script has been modified to use:
 """
 
 from utils_detectron2 import DefaultPredictor_Lazy
-# from vitpose_model import ViTPoseModel
-
-# hands23
-# sys.path.append('src/third-party/hands23_beta')
-# from hands23_demo import init_hands23, inference_hands23
 
 # sam2
 from sam2.build_sam import build_sam2
@@ -213,48 +208,6 @@ def chunk_into_n(lst, n):
         chunks.append(lst[start:end])
         start = end
     return chunks
-
-
-
-# def init_qwen_model(device='cuda'):
-#     """Initialize Qwen2.5-VL-32B-Instruct model with flash-attention optimization"""
-#     # Check if flash-attn is available
-#     # import flash_attn
-#     # flash_attn_available = True
-#     # print(f"Flash-attention detected: version {flash_attn.__version__}")
-    
-#     # Configure model with flash-attention and memory optimizations
-#     model_kwargs = {
-#         "torch_dtype": torch.float16,  # Use float16 instead of bfloat16 for memory efficiency
-#         # Remove device_map="auto" for distributed processing compatibility
-#         "trust_remote_code": True,
-#         "low_cpu_mem_usage": True,  # Reduce CPU memory usage during loading
-#     }
-    
-#     # Add flash-attention configuration
-#     # model_kwargs["attn_implementation"] = "flash_attention_2"
-#     # print(f"Using Flash-Attention 2 for Qwen2.5-VL-32B")
-#     model_kwargs["attn_implementation"] = "sdpa"
-#     print(f"Using sdpa for 2Qwen.5-VL-32B")
-
-#     from transformers import Qwen2_5_VLForConditionalGeneration
-    
-#     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-#         "Qwen/Qwen2.5-VL-7B-Instruct", 
-#         **model_kwargs
-#     )
-    
-#     # Additional memory optimizations
-#     if hasattr(model, 'gradient_checkpointing_enable'):
-#         model.gradient_checkpointing_enable()
-#         print(f"Gradient checkpointing enabled for memory efficiency")
-        
-#     processor = AutoProcessor.from_pretrained(
-#         "Qwen/Qwen2.5-VL-7B-Instruct",
-#         trust_remote_code=True
-#     )
-    
-#     return model, processor
 
 
 
@@ -1372,102 +1325,7 @@ if __name__ == '__main__':
         
         # Object Analysis and Detection
         object_analysis_start = time.time()
-        # print_step_header("Analyzing first frame objects", 1)
         
-        # if len(img_ls) > 0:
-        #     video_objects = analyze_image_with_qwen(qwen_model, qwen_processor, img_ls[0])
-        #     print(f'Objects: {video_objects}')
-            
-        #     # Skip video if fewer than 3 objects detected
-        #     if len(video_objects) < 3:
-        #         print(f'Skipping video: Fewer than 3 objects detected ({len(video_objects)} objects found)')
-        #         continue
-        # else:
-        #     print(f'Skipping video: No frames available')
-        #     continue
-
-        # print("Scaricando Qwen dalla VRAM per fare spazio a SAM2...")
-        # del qwen_model
-        # del qwen_processor
-        # import gc
-        # gc.collect()
-        # import torch
-        # torch.cuda.empty_cache()
-        
-        # grounded_dino_prompt = '. '.join(video_objects) + '.'
-        # print(f'Grounded-DINO prompt: "{grounded_dino_prompt}"')
-        # update_color_palette_for_video(video_objects)
-        
-        # # Use grounded-dino to detect objects in first frame with high precision settings
-        # first_frame_objects = []
-        # if len(img_ls) > 0:
-        #     first_img = get_cached_image(img_ls[0], video_image_cache)
-        #     print(f'First image shape: {first_img.shape}')
-        #     with torch.cuda.amp.autocast(enabled=False):
-        #         obj_bboxes, obj_phrases, obj_scores = detect_objects_with_grounded_dino(
-        #             grounded_dino_model, grounded_dino_transform, first_img, 
-        #             grounded_dino_prompt, box_threshold=0.25, text_threshold=0.2, device=device
-        #         )
-            
-        #     print(f'Grounded-DINO raw results: {len(obj_bboxes)} detections')
-            
-        #     for obj_bbox, obj_phrase, obj_score in zip(obj_bboxes, obj_phrases, obj_scores):
-        #         if get_bbox_area(obj_bbox) > 200:
-        #             class_name = obj_phrase.strip().lower()
-        #             matched_object = None
-        #             best_similarity = 0
-                    
-        #             for video_obj in video_objects:
-        #                 video_obj_clean = video_obj.strip().lower()
-        #                 similarity = 0
-                        
-        #                 if class_name == video_obj_clean:
-        #                     similarity = 1.0
-        #                 elif (class_name in video_obj_clean and 
-        #                       len(class_name) > 3 and
-        #                       (class_name + ' ' in video_obj_clean or 
-        #                        ' ' + class_name in video_obj_clean or
-        #                        class_name == video_obj_clean)):
-        #                     similarity = 0.9
-        #                 elif (video_obj_clean in class_name and 
-        #                       len(video_obj_clean) > 3 and
-        #                       (video_obj_clean + ' ' in class_name or 
-        #                        ' ' + video_obj_clean in class_name or
-        #                        class_name == video_obj_clean)):
-        #                     similarity = 0.8
-        #                 elif (len(class_name) > 4 and len(video_obj_clean) > 4):
-        #                     if (class_name.startswith(video_obj_clean[:4]) or 
-        #                         video_obj_clean.startswith(class_name[:4])):
-        #                         similarity = 0.6
-                        
-        #                 if similarity > best_similarity and similarity > 0.5:
-        #                     best_similarity = similarity
-        #                     matched_object = video_obj_clean
-                    
-        #             if matched_object and obj_score > 0.3 and best_similarity > 0.5:
-        #                 all_indices = [i for i, obj in enumerate(video_objects) if obj.strip().lower() == matched_object]
-        #                 existing_objects = [obj['class_name'] for obj in first_frame_objects]
-        #                 object_count = existing_objects.count(matched_object)
-                        
-        #                 if object_count < len(all_indices):
-        #                     class_id = all_indices[object_count] + 200
-        #                 else:
-        #                     class_id = video_objects.index(matched_object) + 200
-                            
-        #                 first_frame_objects.append({
-        #                     'bbox': obj_bbox,
-        #                     'class_name': matched_object,
-        #                     'class_id': class_id,
-        #                     'confidence': obj_score,
-        #                     'match_quality': best_similarity
-        #                 })
-            
-        #     first_frame_objects = filter_and_deduplicate_objects(first_frame_objects, 
-        #                                                          confidence_threshold=0.25, 
-        #                                                          iou_threshold=0.5)
-            
-        #     print(f'First frame objects: {len(first_frame_objects)}')
-
         # --- NEW ACTOR-CENTRIC ---
         print_step_header("Detecting Actors in first frame", 1)
 
@@ -1535,11 +1393,6 @@ if __name__ == '__main__':
         object_analysis_time = time.time() - object_analysis_start
         timing_stats['object_analysis_detection'] += object_analysis_time
         
-        # thresholds
-        # THD_human_det = 0.8
-        # THD_num_human = 5
-        # THD_human_bbox = 100
-        # THD_hand_bbox = 20
         
         # Initial SAM2 tracking
         initial_sam2_start = time.time()
@@ -1548,26 +1401,7 @@ if __name__ == '__main__':
         
         global_object_id_to_class = {}
         
-        # pred_bboxes = None
-        # for i_idx, img_path in enumerate(img_ls[:1]):
-        #     start_img = get_cached_image(img_path, video_image_cache)
-            
-        #     # Detect humans
-        #     with torch.cuda.amp.autocast(enabled=False):
-        #         first_det_out = detector(start_img)
-                
-        #     det_instances = first_det_out['instances']
-        #     valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > THD_human_det)
-        #     pred_bboxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy().astype(np.float32)
-        #     pred_scores=det_instances.scores[valid_idx].cpu().numpy().astype(np.float32)
-            
-        #     if len(pred_bboxes) > 0: 
-        #         break
-        
-        # if pred_bboxes is None or len(pred_bboxes) == 0:
-        #     print('No humans detected, but continuing with object-only processing')
-        #     pred_bboxes = np.array([]).reshape(0, 4).astype(np.float32)  # Empty array for consistency
-        
+       
         # Reuse existing predictor instead of rebuilding (major optimization)
         torch.cuda.empty_cache()
         with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
@@ -1577,26 +1411,6 @@ if __name__ == '__main__':
                                                     async_loading_frames=True)
             
             ann_frame_idx = 0
-            
-            # Add human bboxes for tracking (using IDs 0-99)
-            # for m_idx, bbox in enumerate(pred_bboxes):
-            #     # 建立人员ID映射
-            #     person_id = m_idx
-            #     global_object_id_to_class[person_id * 10] = 'person'
-            #     global_object_id_to_class[person_id * 10 + 1] = 'left_hand'
-            #     global_object_id_to_class[person_id * 10 + 2] = 'object_in_left_hand'
-            #     global_object_id_to_class[person_id * 10 + 3] = 'left_hand_2nd_obj'
-            #     global_object_id_to_class[person_id * 10 + 4] = 'right_hand'
-            #     global_object_id_to_class[person_id * 10 + 5] = 'object_in_right_hand'
-            #     global_object_id_to_class[person_id * 10 + 6] = 'right_hand_2nd_obj'
-                
-            #     bbox_tensor = torch.tensor(bbox, dtype=torch.float32, device='cpu')
-            #     _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-            #         inference_state=inference_state,
-            #         frame_idx=ann_frame_idx,
-            #         obj_id=m_idx,
-            #         box=bbox_tensor
-            #     )
             
             # Add object bboxes for tracking (using IDs 1000+)
             print(f"Adding {len(first_frame_objects)} objects to SAM2 tracker with IDs 1000+")
@@ -1618,10 +1432,7 @@ if __name__ == '__main__':
             
             print(f"Final global_object_id_to_class mapping: {global_object_id_to_class}")
 
-            # Check if we have any objects to track before propagation
-            # total_objects = len(pred_bboxes) + len(first_frame_objects)
             
-            # if total_objects == 0:
             if first_frame_objects == 0:
                 print("No objects added to SAM2 tracker, skipping propagation")
                 video_segments = {}  # Empty dictionary for consistency
@@ -1641,147 +1452,7 @@ if __name__ == '__main__':
         
         if not tracking_success:
             os.makedirs(finished_path, exist_ok=True)
-            continue
-        
-        # Human and Hand Association
-        # human_hand_start = time.time()
-        # print_step_header("Processing human and hand association", 3)
-        # vis_ls = []
-        # res_ls = {}
-        # total_hands_detected = 0
-        
-        # for i_idx, img_path in tqdm(enumerate(img_ls)):
-            
-        #     img_name = img_path.split('/')[-1]
-        #     img_cv2 = get_cached_image(img_path, video_image_cache)
-        #     img_height, img_width, _ = img_cv2.shape
-
-        #     # Detect humans in image
-        #     # det_out = detector(img_cv2)
-        #     img = img_cv2.copy()[:, :, ::-1]
-
-        #     # from vitPose
-        #     # det_instances = det_out['instances']
-        #     # valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > 0.7)
-        #     # pred_bboxes=det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
-        #     # pred_scores=det_instances.scores[valid_idx].cpu().numpy()
-            
-        #     # from sam2 tracking
-        #     if i_idx not in video_segments: 
-        #         continue
-        #     segments = video_segments[i_idx]
-        #     object_ids = list(segments.keys())
-        #     masks = list(segments.values())
-        #     masks = np.concatenate(masks, axis=0)
-            
-        #     detections = sv.Detections(
-        #         xyxy=sv.mask_to_xyxy(masks),  # (n, 4)
-        #         mask=masks,                   # (n, h, w)
-        #         class_id=np.array(object_ids, dtype=np.int32),
-        #     )
-            
-        #     pred_bboxes = detections.xyxy.astype(np.float32) # 确保为float32
-        #     pred_scores = np.ones((pred_bboxes.shape[0], 1), dtype=np.float32) # 确保为float32
-            
-
-            # # Detect human keypoints for each person
-            # img_uint8 = img.astype(np.uint8)
-            # pred_bboxes_float32 = pred_bboxes.astype(np.float32)
-            # pred_scores_float32 = pred_scores.astype(np.float32)
-            
-            # with torch.cuda.amp.autocast(enabled=False):
-            #     vitposes_out = cpm.predict_pose(
-            #         img_uint8,
-            #         [np.concatenate([pred_bboxes_float32, pred_scores_float32], axis=1)],
-            #     )
-
-            # # hands23 det
-            # with torch.cuda.amp.autocast(enabled=False):
-            #     hand23_res = inference_hands23(hands23_model, img_cv2)
-            
-
-            # count_hands = 0
-            # bodyhands_res = {}
-            # matched_hand_ids = []
-            # # Use hands based on hand keypoint detections
-            # for _, (b_idx, body_bbox, vitposes) in enumerate(zip(object_ids, pred_bboxes, vitposes_out)):
-            #     left_hand_keyp = vitposes['keypoints'][-42:-21]
-            #     right_hand_keyp = vitposes['keypoints'][-21:]
-                                    
-            #     bodyhands_res[f'person_{b_idx:02d}'] = {}
-            #     bodyhands_res[f'person_{b_idx:02d}']['bbox'] = body_bbox.astype(int).tolist()
-
-            #     # Rejecting not confident detections
-            #     keyp = left_hand_keyp
-            #     valid = keyp[:,2] > 0.5
-            #     if sum(valid) > 3:
-            #         left_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-            #         left_bbox = scale_bbox_within_image(left_bbox, img_width, img_height, scale=1.5)
-                    
-            #         matched_left  = match_hands(left_bbox, hand23_res, side='left_hand')
-            #         if matched_left is not None:
-            #             count_hands += 1
-            #             matched_hand_ids.append(matched_left['hand_id'])
-                
-            #             bodyhands_res[f'person_{b_idx:02d}']['left_hand'] = {}
-            #             bodyhands_res[f'person_{b_idx:02d}']['left_hand']['bbox'] = [int(item) for item in left_bbox]
-            #             h_score   = float(matched_left['hand_pred_score'])
-            #             h_side    = matched_left['hand_side']
-            #             fo_bbox   = matched_left['obj_bbox']
-            #             so_bbox   = matched_left['second_obj_bbox']
-            #             contact_state = matched_left['contact_state']
-
-            #             if fo_bbox is not None and contact_state in ['object_contact']:
-            #                 fo_bbox  = [ int(float(x)) for x in fo_bbox]
-            #                 fo_score = float(matched_left['obj_pred_score'])
-            #                 bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_1st_obj'] = fo_bbox
-                            
-            #                 # if so_bbox is not None:
-            #                 #     so_bbox  = [ int(float(x)) for x in so_bbox ]
-            #                 #     so_score = float(matched_left['sec_obj_pred_score'])
-            #                 #     bodyhands_res[f'person_{b_idx:02d}']['left_hand']['left_hand_2nd_obj'] = so_bbox
-                
-                
-            #     # breakpoint()
-            #     keyp = right_hand_keyp
-            #     valid = keyp[:,2] > 0.5
-            #     if sum(valid) > 3:
-            #         right_bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
-            #         right_bbox = scale_bbox_within_image(right_bbox, img_width, img_height, scale=1.5)
-                    
-            #         matched_right = match_hands(right_bbox, hand23_res, side='right_hand')
-            #         if matched_right is not None:
-            #             count_hands += 1
-            #             matched_hand_ids.append(matched_right['hand_id'])
-                      
-            #             bodyhands_res[f'person_{b_idx:02d}']['right_hand'] = {}
-            #             bodyhands_res[f'person_{b_idx:02d}']['right_hand']['bbox'] = [int(item) for item in right_bbox]
-            #             h_score = float(matched_right['hand_pred_score'])
-            #             h_side    = matched_right['hand_side']
-            #             fo_bbox   = matched_right['obj_bbox']
-            #             so_bbox   = matched_right['second_obj_bbox']
-            #             contact_state = matched_right['contact_state']
-
-            #             if fo_bbox is not None and contact_state in ['object_contact']:
-            #                 fo_bbox  = [ int(float(x)) for x in fo_bbox]
-            #                 fo_score = float(matched_right['obj_pred_score'])
-            #                 bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_1st_obj'] = fo_bbox
-                            
-            #                 # if so_bbox is not None:
-            #                 #     so_bbox  = [ int(float(x)) for x in so_bbox ]
-            #                 #     so_score = float(matched_right['sec_obj_pred_score'])
-            #                 #     bodyhands_res[f'person_{b_idx:02d}']['right_hand']['right_hand_2nd_obj'] = so_bbox
-            
-            
-            
-            # count_hands = 0
-            # bodyhands_res = {}
-            # # Registra unicamente i corpi rilevati da SAM2, ignorando le mani
-            # for b_idx, body_bbox in zip(object_ids, pred_bboxes):
-            #     bodyhands_res[f'person_{b_idx:02d}'] = {}
-            #     bodyhands_res[f'person_{b_idx:02d}']['bbox'] = body_bbox.astype(int).tolist()
-            
-            
+            continue     
             
             
             
@@ -1806,138 +1477,10 @@ if __name__ == '__main__':
                                     'track_id': obj_id
                                 })
             
-            # if tracked_objects:
-            #     bodyhands_res['detected_objects'] = tracked_objects
-       
-            # total_hands_detected += count_hands
-            # res_ls[i_idx] = bodyhands_res
-        
-        # human_hand_time = time.time() - human_hand_start
-        # timing_stats['human_hand_association'] += human_hand_time
-        
-        # no hands in the video, but continue with object-only processing
-        # if total_hands_detected == 0: 
-        #     print('No hands detected, but continuing with object-only processing')
         
         out_dir = os.path.join(save_dir, video_name)
         os.makedirs(out_dir, exist_ok=True)
        
-        # Second SAM2 tracking
-        # second_sam2_start = time.time()
-        # print_step_header("Second SAM2 tracking", 4)
-        # # Optimized: reduce GPU memory clearing frequency
-        # # torch.cuda.empty_cache()
-        # with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-        #     inference_state = predictor.init_state(video_path=video_dir, 
-        #                                             offload_video_to_cpu=True,
-        #                                             offload_state_to_cpu=True,
-        #                                             async_loading_frames=True)
-        #     vis_ls = []
-        #     bbox_annotation_success = False
-        #     objects_added_to_sam2 = False
-                
-        #     for i_idx, img_path in tqdm(enumerate(img_ls)):
-        #         if i_idx % 5 != 0: continue
-        #         if i_idx not in res_ls: continue
-                
-        #         # get the image
-        #         img_name = img_path.split('/')[-1]
-        #         img_cv2 = get_cached_image(img_path, video_image_cache)
-        #         img_height, img_width, _ = img_cv2.shape
-        #         img = img_cv2.copy()[:, :, ::-1]
-
-        #         # get raw tracking
-        #         # bodyhand_track = res_ls[i_idx]
-                
-        #         ann_frame_idx = i_idx
-                
-        #         # bbox_ls, bbox_id_ls, bbox_name_ls = [], [], []
-        #         # for person_id, person_val in bodyhand_track.items():
-        #         #     if person_id == 'detected_objects':
-        #         #         continue
-        #         #     person_id = int(person_id.split('_')[-1])
-        #         #     if person_id > THD_num_human: break # max num of humans
-                    
-                    
-        #         #     if 'bbox' in person_val and person_val['bbox'] is not None:
-        #         #         bbox_ls.append(person_val['bbox'])
-        #         #         bbox_id_ls.append(person_id * 10)
-        #         #         bbox_name_ls.append('person')
-                        
-                    
-        #         #     if 'left_hand' in person_val:
-        #         #         if 'bbox' in person_val['left_hand'] and person_val['left_hand']['bbox'] is not None:
-        #         #             bbox_ls.append(person_val['left_hand']['bbox'])
-        #         #             bbox_id_ls.append(person_id * 10 + 1)
-        #         #             bbox_name_ls.append('left_hand')
-                                                
-        #         #         if 'left_hand_1st_obj' in person_val['left_hand'] and person_val['left_hand']['left_hand_1st_obj'] is not None:
-        #         #             bbox_ls.append(person_val['left_hand']['left_hand_1st_obj'])
-        #         #             bbox_id_ls.append(person_id * 10 + 2)
-        #         #             bbox_name_ls.append('object_in_left_hand')
-
-        #         #         if 'left_hand_2nd_obj' in person_val['left_hand'] and person_val['left_hand']['left_hand_2nd_obj'] is not None:
-        #         #             bbox_ls.append(person_val['left_hand']['left_hand_2nd_obj'])
-        #         #             bbox_id_ls.append(person_id * 10 + 3)
-        #         #             bbox_name_ls.append('left_hand_2nd_obj')
-                            
-        #         #     if 'right_hand' in person_val:
-        #         #         if 'bbox' in person_val['right_hand'] and person_val['right_hand']['bbox'] is not None:
-        #         #             bbox_ls.append(person_val['right_hand']['bbox'])
-        #         #             bbox_id_ls.append(person_id * 10 + 4)
-        #         #             bbox_name_ls.append('right_hand')
-                                                
-        #         #         if 'right_hand_1st_obj' in person_val['right_hand'] and person_val['right_hand']['right_hand_1st_obj'] is not None:
-        #         #             bbox_ls.append(person_val['right_hand']['right_hand_1st_obj'])
-        #         #             bbox_id_ls.append(person_id * 10 + 5)
-        #         #             bbox_name_ls.append('object_in_right_hand')
-
-        #         #         if 'right_hand_2nd_obj' in person_val['right_hand'] and person_val['right_hand']['right_hand_2nd_obj'] is not None:
-        #         #             bbox_ls.append(person_val['right_hand']['right_hand_2nd_obj'])
-        #         #             bbox_id_ls.append(person_id * 10 + 6)
-        #         #             bbox_name_ls.append('right_hand_2nd_obj')
-                            
-        #         if not objects_added_to_sam2:
-        #             device = predictor.device
-        #             for obj_idx, obj_data in enumerate(first_frame_objects):
-        #                 obj_id = 1000 + obj_idx  # Use high IDs for objects
-                        
-        #                 first_bbox = obj_data['bbox']
-        #                 obj_key = f"{obj_data['class_name']}_{obj_id}"
-                        
-        #                 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-        #                     inference_state=inference_state,
-        #                     frame_idx=ann_frame_idx,
-        #                     obj_id=obj_id,
-        #                     box=torch.tensor(first_bbox, dtype=torch.float32, device="cpu")
-        #                 )
-        #             objects_added_to_sam2 = True
-                
-
-                
-        #         for m_idx, (m_id, bbox) in enumerate(zip(bbox_id_ls, bbox_ls)):
-        #             device = predictor.device
-        #             bbox_tensor = torch.tensor(bbox, dtype=torch.float32, device="cpu")
-        #             _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-        #                 inference_state=inference_state,
-        #                 frame_idx=ann_frame_idx,
-        #                 obj_id=m_id,
-        #                 box=bbox_tensor
-        #             )
-        #             bbox_annotation_success = True
-                        
-        #         # 
-        #         if i_idx == 0:
-        #             n_person = bbox_id_ls[-1] // 10 + 1 if bbox_id_ls else 0
-                    
-        #     if not bbox_annotation_success:
-        #         print(f"Step 4: No hand bbox annotations were successful, but continuing with object-only processing")
-        #         print(f"  - This is normal for videos without detectable hands")
-        #         print(f"  - Will proceed with detected objects from previous steps")
-
-        # second_sam2_time = time.time() - second_sam2_start
-        # timing_stats['second_sam2_tracking'] += second_sam2_time
-        
         # SAM2 propagation
         sam2_propagation_start = time.time()
         
@@ -1971,19 +1514,6 @@ if __name__ == '__main__':
         # Initialize detected_objects in motion dictionary
         motion['detected_objects'] = {}
 
-        # if 'n_person' not in locals() or n_person == 0:
-        #     print('No persons detected, processing objects only')
-        #     n_person = 0
-
-        # for n in range(n_person):
-        #     motion[f'preson_{n:02d}'] = {} 
-        #     motion[f'preson_{n:02d}']['bbox'] = []     # 0
-        #     motion[f'preson_{n:02d}']['left_hand'] = {}
-        #     motion[f'preson_{n:02d}']['left_hand']['bbox'] = [] # 1
-        #     motion[f'preson_{n:02d}']['left_hand']['left_hand_1st_obj'] = [] # 2
-        #     motion[f'preson_{n:02d}']['right_hand'] = {}
-        #     motion[f'preson_{n:02d}']['right_hand']['bbox'] = [] # 4
-        #     motion[f'preson_{n:02d}']['right_hand']['right_hand_1st_obj'] = [] # 5
             
         motion['detected_objects'] = {}
         
@@ -2018,87 +1548,13 @@ if __name__ == '__main__':
             
             bbox_ls = []
             if i_idx not in video_segments:
-                # for n in range(n_person):
-                #     motion[f'preson_{n:02d}']['bbox'].append( None )
-                #     motion[f'preson_{n:02d}']['left_hand']['bbox'].append( None )
-                #     motion[f'preson_{n:02d}']['left_hand']['left_hand_1st_obj'].append( None )
-                #     motion[f'preson_{n:02d}']['right_hand']['bbox'].append( None )
-                #     motion[f'preson_{n:02d}']['right_hand']['right_hand_1st_obj'].append( None )
+
                 if i_idx > 0:
                     for obj_key in list(motion['detected_objects'].keys()):
                         motion['detected_objects'][obj_key]['bbox'].append(None)
                         
             else:
                 segments = video_segments[i_idx]
-                # for n in range(n_person):
-                #     if n*10 in segments:
-                #         bbox = list(sv.mask_to_xyxy(segments[n*10])[0])
-                #         if get_bbox_area(bbox) > THD_human_bbox:
-                #             # breakpoint
-                #             x1, y1, x2, y2 = bbox
-                #             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                #             motion[f'preson_{n:02d}']['bbox'].append( bbox_norm )
-                #             bbox_ls.append(('person', bbox))
-                #         else:
-                #             motion[f'preson_{n:02d}']['bbox'].append( None )
-                        
-                #     else:
-                #         motion[f'preson_{n:02d}']['bbox'].append( None )
-                        
-                        
-                        
-                #     if (n*10+1) in segments:
-                #         bbox = list(sv.mask_to_xyxy(segments[n*10+1])[0])
-                #         if get_bbox_area(bbox) > THD_hand_bbox:
-                #             x1, y1, x2, y2 = bbox
-                #             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                #             motion[f'preson_{n:02d}']['left_hand']['bbox'].append( bbox_norm )
-                #             bbox_ls.append(('left_hand', bbox))
-                #         else:
-                #             motion[f'preson_{n:02d}']['left_hand']['bbox'].append( None )
-                #     else:
-                #         motion[f'preson_{n:02d}']['left_hand']['bbox'].append( None )
-                        
-                        
-                #     if (n*10+2) in segments:
-                #         bbox = list(sv.mask_to_xyxy(segments[n*10+2])[0])
-                #         if get_bbox_area(bbox) > THD_hand_bbox:
-                #             x1, y1, x2, y2 = bbox
-                #             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                #             motion[f'preson_{n:02d}']['left_hand']['left_hand_1st_obj'].append( bbox_norm )
-                #             bbox_ls.append(('object_in_left_hand', bbox))
-                #         else:
-                #             motion[f'preson_{n:02d}']['left_hand']['left_hand_1st_obj'].append( None )
-                #     else:
-                #         motion[f'preson_{n:02d}']['left_hand']['left_hand_1st_obj'].append( None )
-                        
-                        
-                        
-                #     if (n*10+4) in segments:
-                #         bbox = list(sv.mask_to_xyxy(segments[n*10+4])[0])
-                #         if get_bbox_area(bbox) > THD_hand_bbox:
-                #             x1, y1, x2, y2 = bbox
-                #             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                #             motion[f'preson_{n:02d}']['right_hand']['bbox'].append( bbox_norm )
-                #             bbox_ls.append(('right_hand', bbox))
-                #         else:
-                #             motion[f'preson_{n:02d}']['right_hand']['bbox'].append( None )
-                #     else:
-                #         motion[f'preson_{n:02d}']['right_hand']['bbox'].append( None )
-                        
-                        
-                        
-                #     if n*10+5 in segments:
-                #         bbox = list(sv.mask_to_xyxy(segments[n*10+5])[0])
-                #         if get_bbox_area(bbox) > THD_hand_bbox:
-                #             x1, y1, x2, y2 = bbox
-                #             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                #             motion[f'preson_{n:02d}']['right_hand']['right_hand_1st_obj'].append( bbox_norm )
-                #             bbox_ls.append(('object_in_right_hand', bbox))
-                #         else:
-                #             motion[f'preson_{n:02d}']['right_hand']['right_hand_1st_obj'].append( None )
-                #     else:
-                #         motion[f'preson_{n:02d}']['right_hand']['right_hand_1st_obj'].append( None )
                 
                 detected_objects_count = 0
                 object_ids_above_1000 = [obj_id for obj_id in segments.keys() if obj_id >= 1000]
@@ -2161,9 +1617,6 @@ if __name__ == '__main__':
             
             drawing_objects = []
             
-            # for (name, bbox) in bbox_ls:
-                # if name in ['person', 'left_hand', 'right_hand', 'object_in_left_hand', 'object_in_right_hand']:
-                #     drawing_objects.append((name, bbox))
             
             for obj_key, obj_data in motion['detected_objects'].items():
                 current_bbox_norm = obj_data['bbox'][i_idx] if i_idx < len(obj_data['bbox']) else None
