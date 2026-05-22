@@ -37,13 +37,17 @@ from sam2.build_sam import build_sam2_video_predictor
 from kalman_filter import *
 
 # from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+# from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 
-# grounded-dino v1
-from groundingdino.models import build_model
-from groundingdino.util.slconfig import SLConfig
-from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
-import groundingdino.datasets.transforms as T
+# # grounded-dino v1
+# from groundingdino.models import build_model
+# from groundingdino.util.slconfig import SLConfig
+# from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
+# import groundingdino.datasets.transforms as T
+
+# Florence-2
+from transformers import AutoProcessor, AutoModelForCausalLM, PretrainedConfig
+from transformers import RobertaTokenizer, RobertaTokenizerFast
 
 # VGGT for camera motion detection
 from vggt.models.vggt import VGGT
@@ -324,166 +328,272 @@ def chunk_into_n(lst, n):
     # raise RuntimeError("Qwen model returned empty response")
 
 
-def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
-    """Initialize Grounded DINO v1 model"""
+# def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
+#     """Initialize Grounded DINO v1 model"""
     
-    # --- INIZIO PATCH PER TRANSFORMERS NUOVI ---
-    import transformers
-    from transformers.models.bert.modeling_bert import BertModel
+#     # --- INIZIO PATCH PER TRANSFORMERS NUOVI ---
+#     import transformers
+#     from transformers.models.bert.modeling_bert import BertModel
     
-    # 1. Patch per get_head_mask mancante
-    if not hasattr(BertModel, 'get_head_mask'):
-        print("Applicando monkey-patch a BertModel per compatibilità con GroundingDINO...")
-        def dummy_get_head_mask(self, attention_mask, num_hidden_layers, is_attention_chunked=False):
-            return [None] * num_hidden_layers
-        BertModel.get_head_mask = dummy_get_head_mask
+#     # 1. Patch per get_head_mask mancante
+#     if not hasattr(BertModel, 'get_head_mask'):
+#         print("Applicando monkey-patch a BertModel per compatibilità con GroundingDINO...")
+#         def dummy_get_head_mask(self, attention_mask, num_hidden_layers, is_attention_chunked=False):
+#             return [None] * num_hidden_layers
+#         BertModel.get_head_mask = dummy_get_head_mask
         
-    # 2. Patch per get_extended_attention_mask (risolve l'errore dtype/device)
-    if hasattr(BertModel, 'get_extended_attention_mask'):
-        # Salviamo la funzione originale
-        original_get_ext_mask = BertModel.get_extended_attention_mask
+#     # 2. Patch per get_extended_attention_mask (risolve l'errore dtype/device)
+#     if hasattr(BertModel, 'get_extended_attention_mask'):
+#         # Salviamo la funzione originale
+#         original_get_ext_mask = BertModel.get_extended_attention_mask
         
-        def custom_get_ext_mask(self, attention_mask, input_shape, *args, **kwargs):
-            # GroundingDINO passa (attenzione_mask, input_shape, device).
-            # Hugging Face ora si aspetta (attenzione_mask, input_shape, dtype).
-            # Ignoriamo il device passato da GroundingDINO: HF lo capirà da solo.
-            return original_get_ext_mask(self, attention_mask, input_shape)
+#         def custom_get_ext_mask(self, attention_mask, input_shape, *args, **kwargs):
+#             # GroundingDINO passa (attenzione_mask, input_shape, device).
+#             # Hugging Face ora si aspetta (attenzione_mask, input_shape, dtype).
+#             # Ignoriamo il device passato da GroundingDINO: HF lo capirà da solo.
+#             return original_get_ext_mask(self, attention_mask, input_shape)
             
-        BertModel.get_extended_attention_mask = custom_get_ext_mask
-    # --- FINE PATCH ---
+#         BertModel.get_extended_attention_mask = custom_get_ext_mask
+#     # --- FINE PATCH ---
 
-    args = SLConfig.fromfile(config_path)
-    args.device = device
-    model = build_model(args)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
-    model.eval().to(device)
+#     args = SLConfig.fromfile(config_path)
+#     args.device = device
+#     model = build_model(args)
+#     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+#     model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
+#     model.eval().to(device)
     
-    transform = T.Compose([
-        T.RandomResize([800], max_size=1333),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
+#     transform = T.Compose([
+#         T.RandomResize([800], max_size=1333),
+#         T.ToTensor(),
+#         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+#     ])
     
 
     
-    return model, transform
+#     return model, transform
 
 
-def detect_objects_with_grounded_dino_single(model, transform, image, object_name, box_threshold=0.25, device='cuda'):
-    """Use Grounded DINO v1 to detect single object, ensuring 100% label accuracy"""
+# def detect_objects_with_grounded_dino_single(model, transform, image, object_name, box_threshold=0.25, device='cuda'):
+#     """Use Grounded DINO v1 to detect single object, ensuring 100% label accuracy"""
     
-    # Save original image dimensions
+#     # Save original image dimensions
+#     orig_h, orig_w = image.shape[:2]
+    
+#     # Convert image format and preprocess
+#     image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+#     image_transformed, _ = transform(image_pil, None)
+#     image_transformed = image_transformed.to(device)
+    
+#     # Single object prompt for accuracy
+#     prompt = f"{object_name.strip().lower()}."
+#     print(f"  Detecting '{object_name}' with prompt: '{prompt}', threshold: {box_threshold}, image size: {orig_w}x{orig_h}")
+    
+#     # Debug: Check model and input devices
+#     model_device = next(model.parameters()).device
+#     input_device = image_transformed.device
+#     print(f"    Model device: {model_device}, Input device: {input_device}")
+    
+#     with torch.no_grad():
+#         outputs = model(image_transformed[None], captions=[prompt])
+    
+#     prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]
+#     prediction_boxes = outputs["pred_boxes"].cpu()[0]
+    
+#     # Clean GPU memory (optimized for performance)
+#     del outputs
+#     # torch.cuda.empty_cache()  # Reduced frequency to improve performance
+
+#     # Calculate confidence scores and filter
+#     scores = prediction_logits.max(dim=-1)[0]
+#     mask = scores > box_threshold
+    
+#     filtered_boxes = prediction_boxes[mask]
+#     filtered_scores = scores[mask]
+    
+#     print(f"    Raw detections: {len(scores)}, Above threshold: {len(filtered_boxes)}, Max score: {scores.max().item():.3f}")
+    
+#     # Debug: Show top 5 scores for this object
+#     top_scores, top_indices = scores.topk(min(5, len(scores)))
+#     print(f"    Top 5 scores for '{object_name}': {[f'{s:.3f}' for s in top_scores.tolist()]}")
+    
+#     if len(filtered_boxes) == 0:
+#         return [], [], []
+    
+#     # Convert coordinate format
+#     def center_to_corners_format(boxes_tensor):
+#         cx, cy, w, h = boxes_tensor.unbind(-1)
+#         x1 = cx - 0.5 * w
+#         y1 = cy - 0.5 * h
+#         x2 = cx + 0.5 * w
+#         y2 = cy + 0.5 * h
+#         return torch.stack([x1, y1, x2, y2], dim=-1)
+    
+#     boxes_corners = center_to_corners_format(filtered_boxes)
+#     scale_fct = torch.tensor([orig_w, orig_h, orig_w, orig_h], dtype=torch.float32)
+#     boxes_absolute = boxes_corners * scale_fct
+    
+#     # Ensure coordinates are within image bounds
+#     boxes_absolute[:, 0].clamp_(min=0, max=orig_w)
+#     boxes_absolute[:, 1].clamp_(min=0, max=orig_h)
+#     boxes_absolute[:, 2].clamp_(min=0, max=orig_w)
+#     boxes_absolute[:, 3].clamp_(min=0, max=orig_h)
+    
+#     # Apply basic filtering and return results
+#     boxes_xyxy = []
+#     phrases = []
+#     confidence_scores = []
+    
+#     for i, (box, score) in enumerate(zip(boxes_absolute, filtered_scores)):
+#         x1, y1, x2, y2 = box.tolist()
+#         box_area = (x2 - x1) * (y2 - y1)
+        
+#         if (box_area > 100 and box_area < (orig_w * orig_h * 0.8) and  
+#             (x2 - x1) > 10 and (y2 - y1) > 10 and x2 > x1 and y2 > y1):
+            
+#             boxes_xyxy.append([x1, y1, x2, y2])
+#             phrases.append(object_name.strip().lower())  # Ensure correct class label
+#             confidence_scores.append(score.item())
+#         else:
+#             print(f"    Filtered out box: area={box_area:.1f}, dims={x2-x1:.1f}x{y2-y1:.1f}, score={score.item():.3f}")
+
+#     print(f"    Final results for '{object_name}': {len(boxes_xyxy)} boxes")
+    
+#     return boxes_xyxy, phrases, confidence_scores
+
+
+# def detect_objects_with_grounded_dino(model, transform, image, text_prompt, box_threshold=0.25, text_threshold=0.2, device='cuda'):
+#     """Use Grounded DINO v1 to detect objects one by one, ensuring bbox and label match perfectly"""
+    
+#     # Parse object names
+#     object_names = [obj.strip().lower() for obj in text_prompt.strip('.').split('.') if obj.strip()]
+
+    
+#     all_boxes = []
+#     all_phrases = []
+#     all_scores = []
+    
+#     # Detect each object individually
+#     for obj_name in object_names:
+#         boxes, phrases, scores = detect_objects_with_grounded_dino_single(
+#             model, transform, image, obj_name, box_threshold, device
+#         )
+        
+#         all_boxes.extend(boxes)
+#         all_phrases.extend(phrases)
+#         all_scores.extend(scores)
+    
+#     # Apply NMS to remove overlapping detections
+#     if len(all_boxes) > 1:
+#         all_boxes, all_phrases, all_scores = apply_nms(all_boxes, all_phrases, all_scores, iou_threshold=0.5)
+    
+#     return all_boxes, all_phrases, all_scores
+
+
+
+
+def init_florence2_model(device='cuda'):
+    """Initialize Microsoft Florence-2-large model"""
+    print("Inizializzazione di Florence-2-large...")
+    model_id = "microsoft/Florence-2-large"
+    
+    # 1. Monkey-patch per risolvere il bug di incompatibilità di Florence-2
+    # Definisce l'attributo mancante nella classe base di transformers a runtime
+    if not hasattr(PretrainedConfig, 'forced_bos_token_id'):
+        PretrainedConfig.forced_bos_token_id = None
+
+    # 2. Monkey-patch per risolvere il bug del Processor/Tokenizer
+    if not hasattr(RobertaTokenizer, 'additional_special_tokens'):
+        RobertaTokenizer.additional_special_tokens = []
+    if not hasattr(RobertaTokenizerFast, 'additional_special_tokens'):
+        RobertaTokenizerFast.additional_special_tokens = []
+        
+    # 2. Caricamento standard senza il parametro 'revision'
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, 
+        trust_remote_code=True,
+        attn_implementation="eager"
+    ).eval().to(device)
+    
+    processor = AutoProcessor.from_pretrained(
+        model_id, 
+        trust_remote_code=True
+    )
+    
+    print("Florence-2-large caricato con successo!")
+    return model, processor
+
+
+def detect_objects_with_florence2(model, processor, image, text_prompt, device='cuda'):
+    """Use Florence-2 for Open Vocabulary Object Detection"""
+    
     orig_h, orig_w = image.shape[:2]
     
-    # Convert image format and preprocess
-    image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    image_transformed, _ = transform(image_pil, None)
-    image_transformed = image_transformed.to(device)
+    # 1. Florence-2 spesso crasha su input rettangolari.
+    # Ridimensioniamo a un formato fisso supportato nativamente senza errori di map_features.
+    # L'encoder vision tipicamente lavora bene con 1024x1024 o 768x768.
+    target_size = 768 
     
-    # Single object prompt for accuracy
-    prompt = f"{object_name.strip().lower()}."
-    print(f"  Detecting '{object_name}' with prompt: '{prompt}', threshold: {box_threshold}, image size: {orig_w}x{orig_h}")
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_pil = Image.fromarray(image_rgb)
     
-    # Debug: Check model and input devices
-    model_device = next(model.parameters()).device
-    input_device = image_transformed.device
-    print(f"    Model device: {model_device}, Input device: {input_device}")
+    # Scaliamo brutalmente a target_size x target_size. 
+    # Florence-2 lavora bene anche con deformazioni moderate per via dell'addestramento su risoluzioni miste.
+    image_pil_resized = image_pil.resize((target_size, target_size), Image.LANCZOS)
+    
+    task_prompt = "<OPEN_VOCABULARY_DETECTION>"
+    prompt = f"{task_prompt} {text_prompt}"
+    
+    inputs = processor(text=prompt, images=image_pil_resized, return_tensors="pt").to(device)
     
     with torch.no_grad():
-        outputs = model(image_transformed[None], captions=[prompt])
-    
-    prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]
-    prediction_boxes = outputs["pred_boxes"].cpu()[0]
-    
-    # Clean GPU memory (optimized for performance)
-    del outputs
-    # torch.cuda.empty_cache()  # Reduced frequency to improve performance
-
-    # Calculate confidence scores and filter
-    scores = prediction_logits.max(dim=-1)[0]
-    mask = scores > box_threshold
-    
-    filtered_boxes = prediction_boxes[mask]
-    filtered_scores = scores[mask]
-    
-    print(f"    Raw detections: {len(scores)}, Above threshold: {len(filtered_boxes)}, Max score: {scores.max().item():.3f}")
-    
-    # Debug: Show top 5 scores for this object
-    top_scores, top_indices = scores.topk(min(5, len(scores)))
-    print(f"    Top 5 scores for '{object_name}': {[f'{s:.3f}' for s in top_scores.tolist()]}")
-    
-    if len(filtered_boxes) == 0:
-        return [], [], []
-    
-    # Convert coordinate format
-    def center_to_corners_format(boxes_tensor):
-        cx, cy, w, h = boxes_tensor.unbind(-1)
-        x1 = cx - 0.5 * w
-        y1 = cy - 0.5 * h
-        x2 = cx + 0.5 * w
-        y2 = cy + 0.5 * h
-        return torch.stack([x1, y1, x2, y2], dim=-1)
-    
-    boxes_corners = center_to_corners_format(filtered_boxes)
-    scale_fct = torch.tensor([orig_w, orig_h, orig_w, orig_h], dtype=torch.float32)
-    boxes_absolute = boxes_corners * scale_fct
-    
-    # Ensure coordinates are within image bounds
-    boxes_absolute[:, 0].clamp_(min=0, max=orig_w)
-    boxes_absolute[:, 1].clamp_(min=0, max=orig_h)
-    boxes_absolute[:, 2].clamp_(min=0, max=orig_w)
-    boxes_absolute[:, 3].clamp_(min=0, max=orig_h)
-    
-    # Apply basic filtering and return results
-    boxes_xyxy = []
-    phrases = []
-    confidence_scores = []
-    
-    for i, (box, score) in enumerate(zip(boxes_absolute, filtered_scores)):
-        x1, y1, x2, y2 = box.tolist()
-        box_area = (x2 - x1) * (y2 - y1)
-        
-        if (box_area > 100 and box_area < (orig_w * orig_h * 0.8) and  
-            (x2 - x1) > 10 and (y2 - y1) > 10 and x2 > x1 and y2 > y1):
-            
-            boxes_xyxy.append([x1, y1, x2, y2])
-            phrases.append(object_name.strip().lower())  # Ensure correct class label
-            confidence_scores.append(score.item())
-        else:
-            print(f"    Filtered out box: area={box_area:.1f}, dims={x2-x1:.1f}x{y2-y1:.1f}, score={score.item():.3f}")
-
-    print(f"    Final results for '{object_name}': {len(boxes_xyxy)} boxes")
-    
-    return boxes_xyxy, phrases, confidence_scores
-
-
-def detect_objects_with_grounded_dino(model, transform, image, text_prompt, box_threshold=0.25, text_threshold=0.2, device='cuda'):
-    """Use Grounded DINO v1 to detect objects one by one, ensuring bbox and label match perfectly"""
-    
-    # Parse object names
-    object_names = [obj.strip().lower() for obj in text_prompt.strip('.').split('.') if obj.strip()]
-
-    
-    all_boxes = []
-    all_phrases = []
-    all_scores = []
-    
-    # Detect each object individually
-    for obj_name in object_names:
-        boxes, phrases, scores = detect_objects_with_grounded_dino_single(
-            model, transform, image, obj_name, box_threshold, device
+        generated_ids = model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=1024,
+            early_stopping=False,
+            do_sample=False,
+            num_beams=3,
+            use_cache=False,
         )
         
-        all_boxes.extend(boxes)
-        all_phrases.extend(phrases)
-        all_scores.extend(scores)
+    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     
-    # Apply NMS to remove overlapping detections
-    if len(all_boxes) > 1:
-        all_boxes, all_phrases, all_scores = apply_nms(all_boxes, all_phrases, all_scores, iou_threshold=0.5)
+    # Diciamo al post-processore che l'immagine su cui ha lavorato era 768x768
+    parsed_answer = processor.post_process_generation(
+        generated_text, 
+        task=task_prompt, 
+        image_size=(target_size, target_size)
+    )
     
-    return all_boxes, all_phrases, all_scores
+    results = parsed_answer.get(task_prompt, {})
+    bboxes = results.get('bboxes', [])
+    labels = results.get('labels', [])
+    
+    boxes_xyxy = []
+    phrases = []
+    scores = [] 
+    
+    # Rimappiamo i bounding box dalle dimensioni di 768x768 a quelle dell'immagine originale (orig_w, orig_h)
+    scale_w = orig_w / target_size
+    scale_h = orig_h / target_size
+    
+    for box, label in zip(bboxes, labels):
+        x1, y1, x2, y2 = box
+        
+        # Ri-scaliamo le coordinate per farle combaciare con l'input originale che D2 e DINO useranno
+        box_original_scale = [
+            x1 * scale_w,
+            y1 * scale_h,
+            x2 * scale_w,
+            y2 * scale_h
+        ]
+        
+        boxes_xyxy.append(box_original_scale)
+        phrases.append(label.lower())
+        scores.append(1.0) 
+        
+    return boxes_xyxy, phrases, scores
 
 
 def apply_nms(boxes, phrases, scores, iou_threshold=0.5):
@@ -1140,11 +1250,13 @@ if __name__ == '__main__':
     #     if qwen_model is not None and accelerator is not None:
     #         qwen_model = accelerator.prepare(qwen_model)
     
-    grounded_dino_config = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    grounded_dino_checkpoint = "GroundingDINO/weights/groundingdino_swint_ogc.pth"
-    grounded_dino_model, grounded_dino_transform = init_grounded_dino(
-        grounded_dino_config, grounded_dino_checkpoint, device
-    )
+    # grounded_dino_config = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+    # grounded_dino_checkpoint = "GroundingDINO/weights/groundingdino_swint_ogc.pth"
+    # grounded_dino_model, grounded_dino_transform = init_grounded_dino(
+    #     grounded_dino_config, grounded_dino_checkpoint, device
+    # )
+
+    florence_model, florence_processor = init_florence2_model(device)
 
     # VGGT model for camera motion detection
     vggt_model = None
@@ -1357,23 +1469,46 @@ if __name__ == '__main__':
                     })
 
 
-            # --- 2. ROBOT DETECTION WITH GROUNDED-DINO ---
-            with torch.cuda.amp.autocast(enabled=False):
-                r_bboxes, r_phrases, r_scores = detect_objects_with_grounded_dino(
-                    grounded_dino_model, grounded_dino_transform, first_img, 
-                    "humanoid_robot. robotic_arm.", box_threshold=0.45, text_threshold=0.35, device=device
+            # # --- 2. ROBOT DETECTION WITH GROUNDED-DINO ---
+            # with torch.cuda.amp.autocast(enabled=False):
+            #     r_bboxes, r_phrases, r_scores = detect_objects_with_grounded_dino(
+            #         grounded_dino_model, grounded_dino_transform, first_img, 
+            #         "humanoid_robot. robotic_arm.", box_threshold=0.45, text_threshold=0.35, device=device
+            #     )
+            
+            # for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
+            #     name = phrase.strip().lower()
+            #     if get_bbox_area(bbox) > 500 and name in ["humanoid_robot", "robotic arm"]:
+            #         class_id = 201 if "humanoid" in name else 202
+            #         first_frame_objects.append({
+            #             'bbox': bbox,
+            #             'class_name': name,
+            #             'class_id': class_id,
+            #             'confidence': float(score)
+            #         })
+
+
+
+            # --- 2. ROBOT DETECTION WITH FLORENCE-2 ---
+            with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                r_bboxes, r_phrases, r_scores = detect_objects_with_florence2(
+                    florence_model, florence_processor, first_img, 
+                    "humanoid robot. robotic arm.", device=device
                 )
             
             for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
                 name = phrase.strip().lower()
-                if get_bbox_area(bbox) > 500 and name in ["humanoid_robot", "robotic arm"]:
-                    class_id = 201 if "humanoid" in name else 202
+                # Valutiamo la stringa in modo flessibile poiché Florence-2 potrebbe variare leggermente i nomi estratti
+                if get_bbox_area(bbox) > 500 and ("robot" in name or "arm" in name):
+                    class_id = 201 if "humanoid" in name or "robot" in name else 202
                     first_frame_objects.append({
                         'bbox': bbox,
                         'class_name': name,
                         'class_id': class_id,
                         'confidence': float(score)
                     })
+
+
             
             first_frame_objects = filter_and_deduplicate_objects(
                 first_frame_objects, confidence_threshold=0.40, iou_threshold=0.45
