@@ -13,6 +13,8 @@ from supervision.draw.color import Color, ColorPalette
 import traceback
 import time
 import warnings
+import types
+
 
 warnings.filterwarnings("ignore")
 
@@ -48,6 +50,8 @@ from kalman_filter import *
 # Florence-2
 from transformers import AutoProcessor, AutoModelForCausalLM, PretrainedConfig
 from transformers import RobertaTokenizer, RobertaTokenizerFast
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 
 # VGGT for camera motion detection
 from vggt.models.vggt import VGGT
@@ -489,62 +493,92 @@ def chunk_into_n(lst, n):
     
 #     return all_boxes, all_phrases, all_scores
 
-
-
-
 def init_florence2_model(device='cuda'):
-    """Initialize Microsoft Florence-2-large model"""
-    print("Inizializzazione di Florence-2-large...")
+    """Initialize Microsoft Florence-2-large model with bulletproof runtime fixes"""
+    print("Inizializzazione di Florence-2-large e applicazione patch strutturali...")
     model_id = "microsoft/Florence-2-large"
     
-    # 1. Monkey-patch per risolvere il bug di incompatibilità di Florence-2
-    # Definisce l'attributo mancante nella classe base di transformers a runtime
+    # --- PATCH 1: bos_token ---
     if not hasattr(PretrainedConfig, 'forced_bos_token_id'):
         PretrainedConfig.forced_bos_token_id = None
-
-    # 2. Monkey-patch per risolvere il bug del Processor/Tokenizer
-    if not hasattr(RobertaTokenizer, 'additional_special_tokens'):
-        RobertaTokenizer.additional_special_tokens = []
-    if not hasattr(RobertaTokenizerFast, 'additional_special_tokens'):
-        RobertaTokenizerFast.additional_special_tokens = []
         
-    # 2. Caricamento standard senza il parametro 'revision'
+    # --- PATCH 2: additional_special_tokens (PROPERTY INJECTION) ---
+    # Iniettando una property direttamente nella classe base, impediamo al metodo 
+    # __getattr__ di lanciare l'errore. Risponderà sempre con una lista vuota.
+    if not hasattr(PreTrainedTokenizerBase, 'additional_special_tokens'):
+        PreTrainedTokenizerBase.additional_special_tokens = property(lambda self: [])
+    if not hasattr(PreTrainedTokenizerFast, 'additional_special_tokens'):
+        PreTrainedTokenizerFast.additional_special_tokens = property(lambda self: [])
+        
+    # Caricamento Modello
     model = AutoModelForCausalLM.from_pretrained(
         model_id, 
         trust_remote_code=True,
-        attn_implementation="eager"
+        attn_implementation="eager" 
     ).eval().to(device)
     
+    # Caricamento Processor (Ora supererà indenne l'ostacolo del tokenizer)
     processor = AutoProcessor.from_pretrained(
         model_id, 
         trust_remote_code=True
     )
+
+    # --- PATCH 3: The Cache Subscriptable Error ---
+    def patched_prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, attention_mask=None, head_mask=None, decoder_head_mask=None,
+        decoder_attention_mask=None, cross_attn_head_mask=None, use_cache=None, encoder_outputs=None, **kwargs
+    ):
+        if past_key_values is not None:
+            if hasattr(past_key_values, "get_seq_length"):
+                past_length = past_key_values.get_seq_length()
+            elif isinstance(past_key_values, tuple) and len(past_key_values) > 0 and isinstance(past_key_values[0], tuple):
+                past_length = past_key_values[0][0].shape[2]
+            else:
+                past_length = past_key_values[0].shape[2] if hasattr(past_key_values[0], 'shape') else 0
+                
+            input_ids = input_ids[:, -1:]
+            
+        return {
+            "decoder_input_ids": input_ids,
+            "past_key_values": past_key_values,
+            "encoder_outputs": encoder_outputs,
+            "attention_mask": attention_mask,
+            "head_mask": head_mask,
+            "decoder_head_mask": decoder_head_mask,
+            "decoder_attention_mask": decoder_attention_mask,
+            "cross_attn_head_mask": cross_attn_head_mask,
+            "use_cache": use_cache,
+        }
+        
+    # Iniettiamo il metodo patchato
+    model.language_model.prepare_inputs_for_generation = types.MethodType(
+        patched_prepare_inputs_for_generation, model.language_model
+    )
     
-    print("Florence-2-large caricato con successo!")
+    print("Florence-2-large: Patch applicate. Modello pronto all'uso!")
     return model, processor
 
 
 def detect_objects_with_florence2(model, processor, image, text_prompt, device='cuda'):
-    """Use Florence-2 for Open Vocabulary Object Detection"""
-    
+    """Use Florence-2 for Caption to Phrase Grounding"""
     orig_h, orig_w = image.shape[:2]
     
-    # 1. Florence-2 spesso crasha su input rettangolari.
-    # Ridimensioniamo a un formato fisso supportato nativamente senza errori di map_features.
-    # L'encoder vision tipicamente lavora bene con 1024x1024 o 768x768.
+    # 1. IL CODICE CUSTOM DI FLORENCE-2 RICHIEDE IMMAGINI QUADRATE
     target_size = 768 
     
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
     
-    # Scaliamo brutalmente a target_size x target_size. 
-    # Florence-2 lavora bene anche con deformazioni moderate per via dell'addestramento su risoluzioni miste.
+    # Forziamo un aspect ratio quadrato per bypassare il crash "only support square feature maps"
     image_pil_resized = image_pil.resize((target_size, target_size), Image.LANCZOS)
     
-    task_prompt = "<OPEN_VOCABULARY_DETECTION>"
+    task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
     prompt = f"{task_prompt} {text_prompt}"
     
     inputs = processor(text=prompt, images=image_pil_resized, return_tensors="pt").to(device)
+    
+    # 2. FIX DTYPE: Assicuriamoci che l'input abbia lo stesso dtype del modello (float16/bfloat16)
+    inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
     
     with torch.no_grad():
         generated_ids = model.generate(
@@ -554,12 +588,14 @@ def detect_objects_with_florence2(model, processor, image, text_prompt, device='
             early_stopping=False,
             do_sample=False,
             num_beams=3,
-            use_cache=False,
         )
         
     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     
-    # Diciamo al post-processore che l'immagine su cui ha lavorato era 768x768
+    # --- DEBUG CRITICO ---
+    print(f"\n[DEBUG FLORENCE RAW OUTPUT]: {generated_text}")
+    # ---------------------
+    
     parsed_answer = processor.post_process_generation(
         generated_text, 
         task=task_prompt, 
@@ -574,21 +610,13 @@ def detect_objects_with_florence2(model, processor, image, text_prompt, device='
     phrases = []
     scores = [] 
     
-    # Rimappiamo i bounding box dalle dimensioni di 768x768 a quelle dell'immagine originale (orig_w, orig_h)
+    # 3. RI-SCALATURA: Convertiamo le coordinate dal formato 768x768 all'immagine originale
     scale_w = orig_w / target_size
     scale_h = orig_h / target_size
     
     for box, label in zip(bboxes, labels):
         x1, y1, x2, y2 = box
-        
-        # Ri-scaliamo le coordinate per farle combaciare con l'input originale che D2 e DINO useranno
-        box_original_scale = [
-            x1 * scale_w,
-            y1 * scale_h,
-            x2 * scale_w,
-            y2 * scale_h
-        ]
-        
+        box_original_scale = [x1 * scale_w, y1 * scale_h, x2 * scale_w, y2 * scale_h]
         boxes_xyxy.append(box_original_scale)
         phrases.append(label.lower())
         scores.append(1.0) 
@@ -1490,11 +1518,11 @@ if __name__ == '__main__':
 
 
             # --- 2. ROBOT DETECTION WITH FLORENCE-2 ---
-            with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            with torch.cuda.amp.autocast(enabled=False):
                 r_bboxes, r_phrases, r_scores = detect_objects_with_florence2(
-                    florence_model, florence_processor, first_img, 
-                    "humanoid robot. robotic arm.", device=device
-                )
+                    florence_model, florence_processor, first_img,
+                    "humanoid robot. robotic arm.", device=device 
+                    )
             
             for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
                 name = phrase.strip().lower()

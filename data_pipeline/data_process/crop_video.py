@@ -5,13 +5,28 @@ import argparse
 from tqdm import tqdm
 from scenedetect import detect, ContentDetector
 
+def get_video_duration(video_path):
+    """Ottiene la durata totale del video in secondi tramite ffprobe."""
+    cmd = [
+        "ffprobe", 
+        "-v", "error", 
+        "-show_entries", "format=duration", 
+        "-of", "default=noprint_wrappers=1:nokey=1", 
+        video_path
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
 def crop_video(video_path, output_path, start_time, duration):
-    """Estrae un segmento video ricodificandolo per garantire keyframe precisi"""
+    """Estrae un segmento video ricodificandolo per garantire keyframe precisi."""
     cmd = [
         "ffmpeg",
-        "-y",  # Sovrascrive automaticamente i file esistenti
+        "-y",
         "-loglevel", "error",
-        "-ss", str(start_time),  # Posizionato prima dell'input per fast-seeking
+        "-ss", str(start_time),
         "-i", video_path,
         "-t", str(duration),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
@@ -21,7 +36,7 @@ def crop_video(video_path, output_path, start_time, duration):
     subprocess.run(cmd)
 
 def chunk_into_n(lst, n):
-    """Suddivide la lista in n chunk"""
+    """Suddivide la lista in n chunk."""
     chunk_size = len(lst) // n
     remainder = len(lst) % n
     
@@ -56,21 +71,33 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
         video_name = os.path.basename(video_path)
         base_name = os.path.splitext(video_name)[0]
         
-        # 1. Rilevamento dei cambi di inquadratura (Cut detection)
-        # ContentDetector(threshold=27.0) è il valore di default ottimale
-        scene_list = detect(video_path, ContentDetector())
+        # 1. Rilevamento delle scene
+        try:
+            raw_scenes = detect(video_path, ContentDetector())
+        except Exception as e:
+            print(f"Errore di lettura scenedetect per {video_name}: {e}")
+            raw_scenes = []
+
+        scenes_sec = []
         
-        if not scene_list:
-            print(f"Nessuna scena rilevata in {video_name} o file illeggibile.")
-            continue
-            
-        print(f"Video {video_name}: trovate {len(scene_list)} scene.")
-        
-        # 2. Filtraggio temporale ed estrazione
+        # 2. Gestione caso video continuo vs video con tagli
+        if not raw_scenes:
+            # Nessun taglio rilevato: tratta il video intero come un'unica scena
+            total_duration = get_video_duration(video_path)
+            if total_duration > 0:
+                scenes_sec = [(0.0, total_duration)]
+                print(f"Video {video_name}: Nessun taglio. Trattato come scena singola.")
+            else:
+                print(f"Video {video_name}: File corrotto o illeggibile.")
+                continue
+        else:
+            # Converti i frame timecode di scenedetect in secondi
+            scenes_sec = [(s[0].seconds, s[1].seconds) for s in raw_scenes]
+            print(f"Video {video_name}: trovate {len(scenes_sec)} scene.")
+
+        # 3. Filtraggio temporale ed estrazione per ogni scena identificata
         valid_scenes = 0
-        for i, scene in enumerate(scene_list):
-            start_sec = scene[0].seconds
-            end_sec = scene[1].seconds
+        for i, (start_sec, end_sec) in enumerate(scenes_sec):
             duration = end_sec - start_sec
             
             # Regola 1: Scarta se minore di 3 secondi
@@ -94,7 +121,7 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
             
             crop_video(video_path, output_path, final_start, final_duration)
             
-        print(f"  -> Salvate {valid_scenes} clip valide su {len(scene_list)} totali.")
+        print(f"  -> Salvate {valid_scenes} clip valide su {len(scenes_sec)} totali.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Crop videos based on scene detection and temporal thresholds')
