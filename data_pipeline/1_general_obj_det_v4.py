@@ -18,8 +18,8 @@ import types
 
 warnings.filterwarnings("ignore")
 
-from accelerate import Accelerator
-ACCELERATE_AVAILABLE = True
+# from accelerate import Accelerator
+# ACCELERATE_AVAILABLE = True
 
 """
 This script has been modified to use:
@@ -48,10 +48,10 @@ from kalman_filter import *
 # import groundingdino.datasets.transforms as T
 
 # Florence-2
-from transformers import AutoProcessor, AutoModelForCausalLM, PretrainedConfig
-from transformers import RobertaTokenizer, RobertaTokenizerFast
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from transformers import AutoProcessor, AutoModelForCausalLM
+# from transformers import RobertaTokenizer, RobertaTokenizerFast, PretrainedConfig
+# from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+# from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 
 # VGGT for camera motion detection
 from vggt.models.vggt import VGGT
@@ -494,92 +494,43 @@ def chunk_into_n(lst, n):
 #     return all_boxes, all_phrases, all_scores
 
 def init_florence2_model(device='cuda'):
-    """Initialize Microsoft Florence-2-large model with bulletproof runtime fixes"""
-    print("Inizializzazione di Florence-2-large e applicazione patch strutturali...")
+    """Initialize Microsoft Florence-2-large using native Hugging Face integration"""
+    print("Inizializzazione di Florence-2-large (Nativa)...")
     model_id = "microsoft/Florence-2-large"
     
-    # --- PATCH 1: bos_token ---
-    if not hasattr(PretrainedConfig, 'forced_bos_token_id'):
-        PretrainedConfig.forced_bos_token_id = None
-        
-    # --- PATCH 2: additional_special_tokens (PROPERTY INJECTION) ---
-    # Iniettando una property direttamente nella classe base, impediamo al metodo 
-    # __getattr__ di lanciare l'errore. Risponderà sempre con una lista vuota.
-    if not hasattr(PreTrainedTokenizerBase, 'additional_special_tokens'):
-        PreTrainedTokenizerBase.additional_special_tokens = property(lambda self: [])
-    if not hasattr(PreTrainedTokenizerFast, 'additional_special_tokens'):
-        PreTrainedTokenizerFast.additional_special_tokens = property(lambda self: [])
-        
-    # Caricamento Modello
     model = AutoModelForCausalLM.from_pretrained(
         model_id, 
         trust_remote_code=True,
-        attn_implementation="eager" 
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
     ).eval().to(device)
     
-    # Caricamento Processor (Ora supererà indenne l'ostacolo del tokenizer)
     processor = AutoProcessor.from_pretrained(
         model_id, 
         trust_remote_code=True
     )
-
-    # --- PATCH 3: The Cache Subscriptable Error ---
-    def patched_prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, head_mask=None, decoder_head_mask=None,
-        decoder_attention_mask=None, cross_attn_head_mask=None, use_cache=None, encoder_outputs=None, **kwargs
-    ):
-        if past_key_values is not None:
-            if hasattr(past_key_values, "get_seq_length"):
-                past_length = past_key_values.get_seq_length()
-            elif isinstance(past_key_values, tuple) and len(past_key_values) > 0 and isinstance(past_key_values[0], tuple):
-                past_length = past_key_values[0][0].shape[2]
-            else:
-                past_length = past_key_values[0].shape[2] if hasattr(past_key_values[0], 'shape') else 0
-                
-            input_ids = input_ids[:, -1:]
-            
-        return {
-            "decoder_input_ids": input_ids,
-            "past_key_values": past_key_values,
-            "encoder_outputs": encoder_outputs,
-            "attention_mask": attention_mask,
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "decoder_attention_mask": decoder_attention_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,
-        }
-        
-    # Iniettiamo il metodo patchato
-    model.language_model.prepare_inputs_for_generation = types.MethodType(
-        patched_prepare_inputs_for_generation, model.language_model
-    )
     
-    print("Florence-2-large: Patch applicate. Modello pronto all'uso!")
+    print("Florence-2-large caricato con successo!")
     return model, processor
 
 
 def detect_objects_with_florence2(model, processor, image, text_prompt, device='cuda'):
     """Use Florence-2 for Caption to Phrase Grounding"""
-    orig_h, orig_w = image.shape[:2]
     
-    # 1. IL CODICE CUSTOM DI FLORENCE-2 RICHIEDE IMMAGINI QUADRATE
-    target_size = 768 
-    
+    # 1. Preparazione Immagine
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
     
-    # Forziamo un aspect ratio quadrato per bypassare il crash "only support square feature maps"
-    image_pil_resized = image_pil.resize((target_size, target_size), Image.LANCZOS)
-    
+    # 2. Configurazione Task e Prompt
     task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
     prompt = f"{task_prompt} {text_prompt}"
     
-    inputs = processor(text=prompt, images=image_pil_resized, return_tensors="pt").to(device)
+    # Il processor nativo gestisce automaticamente il resize quadrato e il padding
+    inputs = processor(text=prompt, images=image_pil, return_tensors="pt").to(device)
     
-    # 2. FIX DTYPE: Assicuriamoci che l'input abbia lo stesso dtype del modello (float16/bfloat16)
+    # Garantiamo l'allineamento dei tipi numerici per i tensori visivi
     inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
     
+    # 3. Generazione (Beam Search supportato nativamente)
     with torch.no_grad():
         generated_ids = model.generate(
             input_ids=inputs["input_ids"],
@@ -592,14 +543,13 @@ def detect_objects_with_florence2(model, processor, image, text_prompt, device='
         
     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     
-    # --- DEBUG CRITICO ---
     print(f"\n[DEBUG FLORENCE RAW OUTPUT]: {generated_text}")
-    # ---------------------
     
+    # 4. Post-processing nativo (ri-scala i box automaticamente alle dimensioni originali)
     parsed_answer = processor.post_process_generation(
         generated_text, 
         task=task_prompt, 
-        image_size=(target_size, target_size)
+        image_size=(image_pil.width, image_pil.height)
     )
     
     results = parsed_answer.get(task_prompt, {})
@@ -610,18 +560,13 @@ def detect_objects_with_florence2(model, processor, image, text_prompt, device='
     phrases = []
     scores = [] 
     
-    # 3. RI-SCALATURA: Convertiamo le coordinate dal formato 768x768 all'immagine originale
-    scale_w = orig_w / target_size
-    scale_h = orig_h / target_size
-    
     for box, label in zip(bboxes, labels):
-        x1, y1, x2, y2 = box
-        box_original_scale = [x1 * scale_w, y1 * scale_h, x2 * scale_w, y2 * scale_h]
-        boxes_xyxy.append(box_original_scale)
+        boxes_xyxy.append(box)
         phrases.append(label.lower())
         scores.append(1.0) 
         
     return boxes_xyxy, phrases, scores
+
 
 
 def apply_nms(boxes, phrases, scores, iou_threshold=0.5):
@@ -1183,26 +1128,29 @@ if __name__ == '__main__':
     
     # Auto-detect accelerate environment
     accelerator = None
-    if ACCELERATE_AVAILABLE:
-        # Try to initialize accelerator - this will work if launched with 'accelerate launch'
-        accelerator = Accelerator()
-        device = accelerator.device
-        total_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    # if ACCELERATE_AVAILABLE:
+    #     # Try to initialize accelerator - this will work if launched with 'accelerate launch'
+    #     accelerator = Accelerator()
+    #     device = accelerator.device
+    #     total_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         
-        print(f"ACCELERATE DETECTED:")
-        print(f"   • Total GPUs available: {total_gpus}")
-        print(f"   • Accelerate processes: {accelerator.num_processes}")
-        print(f"   • Current process index: {accelerator.process_index}")
-        print(f"   • Current device: {device}")
+    #     print(f"ACCELERATE DETECTED:")
+    #     print(f"   • Total GPUs available: {total_gpus}")
+    #     print(f"   • Accelerate processes: {accelerator.num_processes}")
+    #     print(f"   • Current process index: {accelerator.process_index}")
+    #     print(f"   • Current device: {device}")
         
-        if accelerator.num_processes == 1 and total_gpus > 1:
-            print(f"Using single process mode")
-            print(f"   Use: accelerate launch --num_processes {total_gpus} script.py")
-        elif accelerator.num_processes > 1:
-            print(f"Multi-GPU setup: using {accelerator.num_processes} GPUs simultaneously")
-    else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Single GPU mode: {device} (accelerate not installed)")
+    #     if accelerator.num_processes == 1 and total_gpus > 1:
+    #         print(f"Using single process mode")
+    #         print(f"   Use: accelerate launch --num_processes {total_gpus} script.py")
+    #     elif accelerator.num_processes > 1:
+    #         print(f"Multi-GPU setup: using {accelerator.num_processes} GPUs simultaneously")
+    # else:
+    #     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    #     print(f"Single GPU mode: {device} (accelerate not installed)")
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Single GPU mode: {device} (accelerate not installed)")
 
     print("Loading models...", flush=True)
     model_loading_start = time.time()
@@ -1366,18 +1314,18 @@ if __name__ == '__main__':
         print(f'Processing chunk {cur_args.chunk_idx}/{cur_args.chunk_num-1} ({len(videos_to_process)} videos)')
     
     # Split videos across accelerator processes if using accelerate
-    if accelerator is not None and accelerator.num_processes > 1:
-        total_videos = len(videos_to_process)
-        videos_to_process = [videos_to_process[i] for i in range(accelerator.process_index, len(videos_to_process), accelerator.num_processes)]
+    # if accelerator is not None and accelerator.num_processes > 1:
+    #     total_videos = len(videos_to_process)
+    #     videos_to_process = [videos_to_process[i] for i in range(accelerator.process_index, len(videos_to_process), accelerator.num_processes)]
         
-        print(f'VIDEO DISTRIBUTION:')
-        print(f'   • Total: {total_videos}, Per GPU: ~{total_videos // accelerator.num_processes}, GPU {accelerator.process_index}: {len(videos_to_process)}')
+    #     print(f'VIDEO DISTRIBUTION:')
+    #     print(f'   • Total: {total_videos}, Per GPU: ~{total_videos // accelerator.num_processes}, GPU {accelerator.process_index}: {len(videos_to_process)}')
         
-        # Show first few video names for verification
-        if videos_to_process:
-            print(f'   • Processing {len(videos_to_process)} videos on GPU {accelerator.process_index}')
-    else:
-        print(f'Processing {len(videos_to_process)} videos on single GPU')
+    #     # Show first few video names for verification
+    #     if videos_to_process:
+    #         print(f'   • Processing {len(videos_to_process)} videos on GPU {accelerator.process_index}')
+    # else:
+    #     print(f'Processing {len(videos_to_process)} videos on single GPU')
 
     skipped_videos = []
     skipped_reasons = {}
