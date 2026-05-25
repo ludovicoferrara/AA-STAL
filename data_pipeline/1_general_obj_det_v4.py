@@ -951,42 +951,42 @@ def preload_video_images(img_paths, max_preload=50):
     
     return preloaded
 
-def batch_vitpose_inference(cpm, images, bboxes_list, batch_size=4):
-    """
-    Batch inference for ViTPose to improve efficiency
-    Args:
-        cpm: ViTPose model
-        images: List of images
-        bboxes_list: List of bboxes for each image
-        batch_size: Batch size for inference
-    Returns:
-        List of pose results
-    """
-    results = []
+# def batch_vitpose_inference(cpm, images, bboxes_list, batch_size=4):
+#     """
+#     Batch inference for ViTPose to improve efficiency
+#     Args:
+#         cpm: ViTPose model
+#         images: List of images
+#         bboxes_list: List of bboxes for each image
+#         batch_size: Batch size for inference
+#     Returns:
+#         List of pose results
+#     """
+#     results = []
     
-    for i in range(0, len(images), batch_size):
-        batch_images = images[i:i + batch_size]
-        batch_bboxes = bboxes_list[i:i + batch_size]
+#     for i in range(0, len(images), batch_size):
+#         batch_images = images[i:i + batch_size]
+#         batch_bboxes = bboxes_list[i:i + batch_size]
         
-        # Process batch
-        batch_results = []
-        for img, bboxes in zip(batch_images, batch_bboxes):
-            try:
-                img_uint8 = img.astype(np.uint8)
-                bboxes_float32 = bboxes.astype(np.float32)
+#         # Process batch
+#         batch_results = []
+#         for img, bboxes in zip(batch_images, batch_bboxes):
+#             try:
+#                 img_uint8 = img.astype(np.uint8)
+#                 bboxes_float32 = bboxes.astype(np.float32)
                 
-                with torch.cuda.amp.autocast(enabled=False):
-                    vitposes_out = cpm.predict_pose(
-                        img_uint8,
-                        [bboxes_float32],
-                    )
-                batch_results.append(vitposes_out)
-            except Exception as e:
-                batch_results.append([])
+#                 with torch.cuda.amp.autocast(enabled=False):
+#                     vitposes_out = cpm.predict_pose(
+#                         img_uint8,
+#                         [bboxes_float32],
+#                     )
+#                 batch_results.append(vitposes_out)
+#             except Exception as e:
+#                 batch_results.append([])
         
-        results.extend(batch_results)
+#         results.extend(batch_results)
     
-    return results
+#     return results
 
 
 def should_skip_video_due_to_camera_motion(vggt_model, video_dir, motion_threshold=0.1, sample_frames=8):
