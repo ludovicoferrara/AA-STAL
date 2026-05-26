@@ -39,7 +39,7 @@ from sam2.build_sam import build_sam2_video_predictor
 from kalman_filter import *
 
 # from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
-# from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 
 # # grounded-dino v1
 # from groundingdino.models import build_model
@@ -82,6 +82,7 @@ def get_iou(bb1, bb2):
     assert bb1[1] < bb1[3]
     assert bb2[0] < bb2[2]
     assert bb2[1] < bb2[3]
+
 
     # determine the coordinates of the intersection rectangle
     x_left = max(bb1[0], bb2[0])
@@ -220,117 +221,121 @@ def chunk_into_n(lst, n):
 
 
 
-# def init_qwen_model(device='cuda'):
-#     """Inizializza Qwen2.5-VL-3B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
-#     print("Inizializzazione di Qwen2.5-VL-3B in modalità 4-bit (INT4)...")
+def init_qwen_model(device='cuda'):
+    """Inizializza Qwen2.5-VL-7B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
+    print("Inizializzazione di Qwen2.5-VL-7B in modalità 4-bit (INT4)...")
     
-#     # Configurazione per comprimere il modello a 4-bit
-#     quantization_config = BitsAndBytesConfig(
-#         load_in_4bit=True,
-#         bnb_4bit_quant_type="nf4",           # Formato ottimizzato per i pesi normalizzati
-#         bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
-#         bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
-#     )
+    # Configurazione per comprimere il modello a 4-bit
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",           # Formato ottimizzato per i pesi normalizzati
+        bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
+        bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
+    )
     
-#     # Passiamo alla versione da 3 Miliardi di parametri
-#     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
+    # Passiamo alla versione da 7 Miliardi di parametri
+    model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
     
-#     # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
-#     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-#         model_id,
-#         quantization_config=quantization_config,
-#         device_map={"": 0},
-#         trust_remote_code=True,
-#         low_cpu_mem_usage=True,
-#         torch_dtype=torch.float16,
-#         attn_implementation="sdpa" # Usa scaled dot-product attention nativa di PyTorch
-#     )
+    # # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
+    # model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    #     model_id,
+    #     quantization_config=quantization_config,
+    #     device_map={"": 0},
+    #     trust_remote_code=True,
+    #     low_cpu_mem_usage=True,
+    #     torch_dtype=torch.float16,
+    #     attn_implementation="sdpa"
+    # )
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_id,
+        quantization_config=quantization_config,
+        device_map="auto",
+        torch_dtype=torch.float16
+    )
     
-#     processor = AutoProcessor.from_pretrained(
-#         model_id,
-#         trust_remote_code=True
-#     )
+    processor = AutoProcessor.from_pretrained(
+        model_id,
+        trust_remote_code=True
+    )
     
-#     print("Qwen2.5-VL-3B caricato con successo in 4-bit!")
-#     return model, processor
+    print("Qwen2.5-VL-7B caricato con successo in 4-bit!")
+    return model, processor
 
 
 
 
 
-# def analyze_image_with_qwen(model, processor, image_path):
-    # """Analyze objects in image using Qwen2.5-VL-32B-Instruct"""
-    # # Clear CUDA cache before processing to free up memory
-    # torch.cuda.empty_cache()
+def detect_objects_with_qwen2_5_vl(model, processor, image, text_prompt):
+    """Visual Grounding Zero-Shot usando Qwen2.5-VL"""
+    from qwen_vl_utils import process_vision_info
     
-    # # Resize image to save memory
-    # image = Image.open(image_path).convert('RGB')
-    # max_size = 512  # Limit max dimension to 512px
-    # if max(image.size) > max_size:
-    #     ratio = max_size / max(image.size)
-    #     new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-    #     image = image.resize(new_size, Image.LANCZOS)
-    #     print(f"Resized image from {image.size} to {new_size} to save memory")
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_pil = Image.fromarray(image_rgb)
+    img_w, img_h = image_pil.size
+    
+    # Prompt rigoroso per forzare l'output delle coordinate spaziali
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image_pil},
+                {"type": "text", "text": f"Locate the {text_prompt} in the image and provide their bounding boxes."}
+            ]
+        }
+    ]
+    
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = process_vision_info(messages)
+    
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt"
+    ).to(model.device)
+    
+    with torch.no_grad():
+        generated_ids = model.generate(**inputs, max_new_tokens=128)
         
-    # messages = [{
-    #     "role": "user",
-    #     "content": [
-    #         {"type": "image", "image": image},
-    #         {"type": "text", "text": "Please list the clearly visible objects you can identify in this image, excluding hands and people. Separate each object with a comma, for example: table, chair, cup, bottle, book, phone, computer, bowl, knife, spoon, etc."}
-    #     ]
-    # }]
-
-    # from qwen_vl_utils import process_vision_info
-    # text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    # image_inputs, video_inputs = process_vision_info(messages)
-    # inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
     
-    # # Handle both regular model and DDP-wrapped model
-    # # device = model.device if hasattr(model, 'device') else model.module.device
-    # # inputs = inputs.to(device)
-
-    # inputs = inputs.to("cuda")
-
-    # with torch.no_grad():
-    #     # Optimized generation parameters for flash-attention with reduced memory usage
-    #     generation_kwargs = {
-    #         "max_new_tokens": 64,  # Reduced from 128 to save memory
-    #         "do_sample": False,
-    #         "pad_token_id": processor.tokenizer.eos_token_id,
-    #         "use_cache": True,  # Enable KV cache for faster generation
-    #     }
+    output_text = processor.batch_decode(
+        generated_ids_trimmed, skip_special_tokens=False, clean_up_tokenization_spaces=False
+    )[0]
+    
+    print(f"\n[DEBUG QWEN RAW OUTPUT]: {output_text}")
+    
+    # Parser Regex per token nativi di grounding: <|box_start|>(y1,x1),(y2,x2)<|box_end|>
+    # Il pattern estrae opzionalmente la label associata
+    pattern = r'(?:<\|object_ref_start\|>(.*?)<\|object_ref_end\|>)?<\|box_start\|>\((\d+),(\d+)\),\((\d+),(\d+)\)<\|box_end\|>'
+    matches = re.findall(pattern, output_text)
+    
+    boxes_xyxy = []
+    phrases = []
+    scores = []
+    
+    for match in matches:
+        label_raw, ymin, xmin, ymax, xmax = match
+        label = label_raw.strip().lower() if label_raw else "robot_part"
         
-    #     # Additional optimizations for flash-attention
-    #     # import flash_attn
-    #     generation_kwargs.update({
-    #         "output_attentions": False,  # Disable attention outputs to save memory
-    #         "output_hidden_states": False,  # Disable hidden states
-    #     })
+        ymin, xmin, ymax, xmax = map(int, [ymin, xmin, ymax, xmax])
         
-    #     # Handle both regular model and DDP-wrapped model
-    #     if hasattr(model, 'generate'):
-    #         generated_ids = model.generate(**inputs, **generation_kwargs)
-    #     elif hasattr(model, 'module') and hasattr(model.module, 'generate'):
-    #         generated_ids = model.module.generate(**inputs, **generation_kwargs)
-    #     else:
-    #         raise RuntimeError("Model does not have generate method")
+        # Conversione scala Qwen [0-1000] alle dimensioni assolute dell'immagine
+        x1 = (xmin / 1000.0) * img_w
+        y1 = (ymin / 1000.0) * img_h
+        x2 = (xmax / 1000.0) * img_w
+        y2 = (ymax / 1000.0) * img_h
+        
+        boxes_xyxy.append([x1, y1, x2, y2])
+        phrases.append(label)
+        scores.append(1.0) # Confidenza implicita 1.0 per zero-shot extraction
+        
+    return boxes_xyxy, phrases, scores
     
-    # generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-    # output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    
-    # # Aggressively clean GPU memory
-    # del inputs, generated_ids, generated_ids_trimmed, image, messages, text
-    # torch.cuda.empty_cache()  # Always clear cache after processing
-    
-    # if output_text and output_text[0]:
-    #     objects = [obj.strip().lower() for obj in output_text[0].strip().split(',')]
-    #     object_names = [obj for obj in objects if obj and len(obj) > 1]
-    #     if not object_names:
-    #         raise RuntimeError("Qwen model returned empty object list")
-    #     return object_names
-    
-    # raise RuntimeError("Qwen model returned empty response")
-
 
 # def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
 #     """Initialize Grounded DINO v1 model"""
@@ -1232,7 +1237,7 @@ if __name__ == '__main__':
     #     grounded_dino_config, grounded_dino_checkpoint, device
     # )
 
-    florence_model, florence_processor = init_florence2_model(device)
+    qwen_model, qwen_processor = init_qwen2_5_vl_model(device)
 
     # VGGT model for camera motion detection
     vggt_model = None
@@ -1465,16 +1470,15 @@ if __name__ == '__main__':
 
 
 
-            # --- 2. ROBOT DETECTION WITH FLORENCE-2 ---
+            # --- 2. ROBOT DETECTION WITH QWEN2.5-VL ---
             with torch.cuda.amp.autocast(enabled=False):
-                r_bboxes, r_phrases, r_scores = detect_objects_with_florence2(
-                    florence_model, florence_processor, first_img,
-                    "humanoid robot. robotic arm.", device=device 
-                    )
+                r_bboxes, r_phrases, r_scores = detect_objects_with_qwen2_5_vl(
+                    qwen_model, qwen_processor, first_img,
+                    "humanoid robot, robotic arm and autonomous mobile robot"
+                )
             
             for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
                 name = phrase.strip().lower()
-                # Valutiamo la stringa in modo flessibile poiché Florence-2 potrebbe variare leggermente i nomi estratti
                 if get_bbox_area(bbox) > 500 and ("robot" in name or "arm" in name):
                     class_id = 201 if "humanoid" in name or "robot" in name else 202
                     first_frame_objects.append({
@@ -1483,21 +1487,20 @@ if __name__ == '__main__':
                         'class_id': class_id,
                         'confidence': float(score)
                     })
-
-
             
             first_frame_objects = filter_and_deduplicate_objects(
                 first_frame_objects, confidence_threshold=0.40, iou_threshold=0.45
             )
             
-            print(f"Actors successfully initialized: {len(first_frame_objects)}")
             for act in first_frame_objects:
                 print(f"  -> {act['class_name']} (Conf: {act['confidence']:.2f}) at {act['bbox']}")
         
         if not first_frame_objects:
-            print(f"Skipping video {video_name}: No valid actors found in the first frame.")
             os.makedirs(finished_path, exist_ok=True)
             continue
+            
+        object_analysis_time = time.time() - object_analysis_start
+        timing_stats['object_analysis_detection'] += object_analysis_time
         
         # FINISH NEW ACTOR-CENTRIC
 
