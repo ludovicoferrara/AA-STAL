@@ -1,7 +1,10 @@
 from pathlib import Path
 import torch, random
 import argparse
-import os, sys, glob, imageio, pickle
+import os, sys, glob, imageio
+
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 from PIL import Image
 import cv2
 import numpy as np
@@ -10,23 +13,13 @@ import json
 from typing import Dict, Optional
 import supervision as sv
 from supervision.draw.color import Color, ColorPalette
-import traceback
 import time
 import warnings
-import types
-
 
 warnings.filterwarnings("ignore")
 
 # from accelerate import Accelerator
 # ACCELERATE_AVAILABLE = True
-
-"""
-This script has been modified to use:
-1. Qwen2-VL-72B-Instruct vision-language model to analyze the first frame of each video and identify objects
-2. Grounded-DINO v1 for object detection based on the objects identified by Qwen2-VL-72B
-3. The original hand and hand-object detection pipeline remains unchanged
-"""
 
 from utils_detectron2 import DefaultPredictor_Lazy
 
@@ -38,20 +31,9 @@ from sam2.build_sam import build_sam2_video_predictor
 
 from kalman_filter import *
 
-# from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 
-# # grounded-dino v1
-# from groundingdino.models import build_model
-# from groundingdino.util.slconfig import SLConfig
-# from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
-# import groundingdino.datasets.transforms as T
-
-# Florence-2
-from transformers import AutoProcessor, AutoModelForCausalLM
-# from transformers import RobertaTokenizer, RobertaTokenizerFast, PretrainedConfig
-# from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-# from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from transformers import AutoModelForCausalLM
 
 # VGGT for camera motion detection
 from vggt.models.vggt import VGGT
@@ -92,7 +74,7 @@ def get_iou(bb1, bb2):
 
     if x_right < x_left or y_bottom < y_top:
         return 0.0
-    
+
     intersection_area = (x_right - x_left) * (y_bottom - y_top)
 
     # compute the area of both AABBs
@@ -136,52 +118,30 @@ def scale_bbox_within_image(bbox, img_width, img_height, scale=1.5):
     new_x2 = max(0, min(new_x2, img_width))
     new_y1 = max(0, min(new_y1, img_height))
     new_y2 = max(0, min(new_y2, img_height))
-    
+
     if new_x1 < new_x2 and new_y1 < new_y2:
         return (new_x1, new_y1, new_x2, new_y2)
     else:
         return None
-    
 
 
-
-# def match_hands(hand_bbox, hands23_preds, side='left_hand'):
-#     if hand_bbox is None:
-#         return None
-    
-#     rank_ls = []
-#     for hand in hands23_preds:
-#         p = hand.get_json()
-#         h_side    = p['hand_side']
-#         if h_side == side:
-#             h_bbox  = [ int(float(x)) for x in p['hand_bbox']]
-#             iou = get_iou(hand_bbox, h_bbox)
-#             if iou > 0.3:
-#                 rank_ls.append((iou, p))      
-#     rank_ls = sorted(rank_ls, key=lambda x:x[0], reverse=True)
-#     # print('ranked hand list = ', rank_ls)
-#     if len(rank_ls) > 0:
-#         return rank_ls[0][1]
-#     return None
-    
-    
 def get_mask4bbox(sam2_image_predictor, image_path, bboxes):
-    
+
     image = Image.open(image_path)
     image = np.array(image.convert("RGB"))
-    
+
     sam2_image_predictor.set_image(image)
-   
+
     input_boxes = np.array(bboxes)
     masks, scores, _ = sam2_image_predictor.predict(
         point_coords=None,
         point_labels=None,
         box=input_boxes,
         multimask_output=False,
-    )       
+    )
     # print(masks.shape)
     masks_clean = []
-    
+
     if len(masks.shape) == 3:
         masks = masks[None, :, :, :]
     for m_idx in range(masks.shape[0]):
@@ -224,7 +184,7 @@ def chunk_into_n(lst, n):
 def init_qwen_model(device='cuda'):
     """Inizializza Qwen2.5-VL-7B-Instruct con quantizzazione a 4-bit per risparmiare VRAM"""
     print("Inizializzazione di Qwen2.5-VL-7B in modalità 4-bit (INT4)...")
-    
+
     # Configurazione per comprimere il modello a 4-bit
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -232,33 +192,24 @@ def init_qwen_model(device='cuda'):
         bnb_4bit_compute_dtype=torch.float16, # I calcoli avvengono comunque in FP16 per stabilità
         bnb_4bit_use_double_quant=True       # Risparmia ulteriore memoria quantizzando le costanti
     )
-    
+
     # Passiamo alla versione da 7 Miliardi di parametri
     model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
-    
-    # # Carichiamo il modello con device_map="auto" (richiesto da bitsandbytes)
-    # model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    #     model_id,
-    #     quantization_config=quantization_config,
-    #     device_map={"": 0},
-    #     trust_remote_code=True,
-    #     low_cpu_mem_usage=True,
-    #     torch_dtype=torch.float16,
-    #     attn_implementation="sdpa"
-    # )
+
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map="auto",
-        torch_dtype=torch.float16
+        device_map={"": 0},
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True
     )
-    
+
     processor = AutoProcessor.from_pretrained(
         model_id,
         trust_remote_code=True
     )
-    
+
     print("Qwen2.5-VL-7B caricato con successo in 4-bit!")
     return model, processor
 
@@ -267,27 +218,36 @@ def init_qwen_model(device='cuda'):
 
 
 def detect_objects_with_qwen2_5_vl(model, processor, image, text_prompt):
-    """Visual Grounding Zero-Shot usando Qwen2.5-VL"""
+    """Visual Grounding Zero-Shot usando Qwen2.5-VL (con parsing JSON rinforzato)"""
     from qwen_vl_utils import process_vision_info
-    
+    import re
+    import json
+
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image_pil = Image.fromarray(image_rgb)
     img_w, img_h = image_pil.size
-    
-    # Prompt rigoroso per forzare l'output delle coordinate spaziali
+
+    # Prompt draconiano per forzare SOLO l'output JSON
+    strict_prompt = (
+        f"Locate the following objects in the image: {text_prompt}. "
+        "You MUST output ONLY a valid JSON array. Do not include any conversational text, explanations, or markdown formatting. "
+        "If none of the objects are present in the image, you must output exactly this empty array: []\n"
+        "Format example: [{\"label\": \"robotic arm\", \"bbox_2d\": [ymin, xmin, ymax, xmax]}]"
+    )
+
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image_pil},
-                {"type": "text", "text": f"Locate the {text_prompt} in the image and provide their bounding boxes."}
+                {"type": "text", "text": strict_prompt}
             ]
         }
     ]
-    
+
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
-    
+
     inputs = processor(
         text=[text],
         images=image_inputs,
@@ -295,324 +255,101 @@ def detect_objects_with_qwen2_5_vl(model, processor, image, text_prompt):
         padding=True,
         return_tensors="pt"
     ).to(model.device)
-    
+
     with torch.no_grad():
         generated_ids = model.generate(**inputs, max_new_tokens=128)
-        
+
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
-    
+
     output_text = processor.batch_decode(
-        generated_ids_trimmed, skip_special_tokens=False, clean_up_tokenization_spaces=False
+        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
-    
-    print(f"\n[DEBUG QWEN RAW OUTPUT]: {output_text}")
-    
-    # Parser Regex per token nativi di grounding: <|box_start|>(y1,x1),(y2,x2)<|box_end|>
-    # Il pattern estrae opzionalmente la label associata
-    pattern = r'(?:<\|object_ref_start\|>(.*?)<\|object_ref_end\|>)?<\|box_start\|>\((\d+),(\d+)\),\((\d+),(\d+)\)<\|box_end\|>'
-    matches = re.findall(pattern, output_text)
-    
+
+    del inputs
+    del image_inputs
+    del video_inputs
+    del generated_ids
+    del generated_ids_trimmed
+
+    print(f"\n[DEBUG QWEN RAW OUTPUT]: {output_text.strip()}")
+
     boxes_xyxy = []
     phrases = []
     scores = []
     
-    for match in matches:
-        label_raw, ymin, xmin, ymax, xmax = match
-        label = label_raw.strip().lower() if label_raw else "robot_part"
-        
-        ymin, xmin, ymax, xmax = map(int, [ymin, xmin, ymax, xmax])
-        
-        # Conversione scala Qwen [0-1000] alle dimensioni assolute dell'immagine
-        x1 = (xmin / 1000.0) * img_w
-        y1 = (ymin / 1000.0) * img_h
-        x2 = (xmax / 1000.0) * img_w
-        y2 = (ymax / 1000.0) * img_h
-        
-        boxes_xyxy.append([x1, y1, x2, y2])
-        phrases.append(label)
-        scores.append(1.0) # Confidenza implicita 1.0 per zero-shot extraction
-        
-    return boxes_xyxy, phrases, scores
+    # Estrazione sicura del JSON tramite Regex (cerca tutto ciò che è tra [ e ])
+    json_match = re.search(r'\[.*\]', output_text, re.DOTALL)
     
+    if not json_match:
+        print("Nessun blocco JSON trovato nell'output di Qwen. Restituisco lista vuota.")
+        return boxes_xyxy, phrases, scores
 
-# def init_grounded_dino(config_path="configs/GroundingDINO_SwinT_OGC.py", checkpoint_path="weights/groundingdino_swint_ogc.pth", device='cuda'):
-#     """Initialize Grounded DINO v1 model"""
+    clean_text = json_match.group(0)
     
-#     # --- INIZIO PATCH PER TRANSFORMERS NUOVI ---
-#     import transformers
-#     from transformers.models.bert.modeling_bert import BertModel
-    
-#     # 1. Patch per get_head_mask mancante
-#     if not hasattr(BertModel, 'get_head_mask'):
-#         print("Applicando monkey-patch a BertModel per compatibilità con GroundingDINO...")
-#         def dummy_get_head_mask(self, attention_mask, num_hidden_layers, is_attention_chunked=False):
-#             return [None] * num_hidden_layers
-#         BertModel.get_head_mask = dummy_get_head_mask
-        
-#     # 2. Patch per get_extended_attention_mask (risolve l'errore dtype/device)
-#     if hasattr(BertModel, 'get_extended_attention_mask'):
-#         # Salviamo la funzione originale
-#         original_get_ext_mask = BertModel.get_extended_attention_mask
-        
-#         def custom_get_ext_mask(self, attention_mask, input_shape, *args, **kwargs):
-#             # GroundingDINO passa (attenzione_mask, input_shape, device).
-#             # Hugging Face ora si aspetta (attenzione_mask, input_shape, dtype).
-#             # Ignoriamo il device passato da GroundingDINO: HF lo capirà da solo.
-#             return original_get_ext_mask(self, attention_mask, input_shape)
+    try:
+        qwen_objects = json.loads(clean_text)
+        for obj in qwen_objects:
+            label = obj.get("label", "robot_part").strip().lower()
+            ymin, xmin, ymax, xmax = obj["bbox_2d"]
             
-#         BertModel.get_extended_attention_mask = custom_get_ext_mask
-#     # --- FINE PATCH ---
-
-#     args = SLConfig.fromfile(config_path)
-#     args.device = device
-#     model = build_model(args)
-#     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-#     model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
-#     model.eval().to(device)
-    
-#     transform = T.Compose([
-#         T.RandomResize([800], max_size=1333),
-#         T.ToTensor(),
-#         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-#     ])
-    
-
-    
-#     return model, transform
-
-
-# def detect_objects_with_grounded_dino_single(model, transform, image, object_name, box_threshold=0.25, device='cuda'):
-#     """Use Grounded DINO v1 to detect single object, ensuring 100% label accuracy"""
-    
-#     # Save original image dimensions
-#     orig_h, orig_w = image.shape[:2]
-    
-#     # Convert image format and preprocess
-#     image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-#     image_transformed, _ = transform(image_pil, None)
-#     image_transformed = image_transformed.to(device)
-    
-#     # Single object prompt for accuracy
-#     prompt = f"{object_name.strip().lower()}."
-#     print(f"  Detecting '{object_name}' with prompt: '{prompt}', threshold: {box_threshold}, image size: {orig_w}x{orig_h}")
-    
-#     # Debug: Check model and input devices
-#     model_device = next(model.parameters()).device
-#     input_device = image_transformed.device
-#     print(f"    Model device: {model_device}, Input device: {input_device}")
-    
-#     with torch.no_grad():
-#         outputs = model(image_transformed[None], captions=[prompt])
-    
-#     prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]
-#     prediction_boxes = outputs["pred_boxes"].cpu()[0]
-    
-#     # Clean GPU memory (optimized for performance)
-#     del outputs
-#     # torch.cuda.empty_cache()  # Reduced frequency to improve performance
-
-#     # Calculate confidence scores and filter
-#     scores = prediction_logits.max(dim=-1)[0]
-#     mask = scores > box_threshold
-    
-#     filtered_boxes = prediction_boxes[mask]
-#     filtered_scores = scores[mask]
-    
-#     print(f"    Raw detections: {len(scores)}, Above threshold: {len(filtered_boxes)}, Max score: {scores.max().item():.3f}")
-    
-#     # Debug: Show top 5 scores for this object
-#     top_scores, top_indices = scores.topk(min(5, len(scores)))
-#     print(f"    Top 5 scores for '{object_name}': {[f'{s:.3f}' for s in top_scores.tolist()]}")
-    
-#     if len(filtered_boxes) == 0:
-#         return [], [], []
-    
-#     # Convert coordinate format
-#     def center_to_corners_format(boxes_tensor):
-#         cx, cy, w, h = boxes_tensor.unbind(-1)
-#         x1 = cx - 0.5 * w
-#         y1 = cy - 0.5 * h
-#         x2 = cx + 0.5 * w
-#         y2 = cy + 0.5 * h
-#         return torch.stack([x1, y1, x2, y2], dim=-1)
-    
-#     boxes_corners = center_to_corners_format(filtered_boxes)
-#     scale_fct = torch.tensor([orig_w, orig_h, orig_w, orig_h], dtype=torch.float32)
-#     boxes_absolute = boxes_corners * scale_fct
-    
-#     # Ensure coordinates are within image bounds
-#     boxes_absolute[:, 0].clamp_(min=0, max=orig_w)
-#     boxes_absolute[:, 1].clamp_(min=0, max=orig_h)
-#     boxes_absolute[:, 2].clamp_(min=0, max=orig_w)
-#     boxes_absolute[:, 3].clamp_(min=0, max=orig_h)
-    
-#     # Apply basic filtering and return results
-#     boxes_xyxy = []
-#     phrases = []
-#     confidence_scores = []
-    
-#     for i, (box, score) in enumerate(zip(boxes_absolute, filtered_scores)):
-#         x1, y1, x2, y2 = box.tolist()
-#         box_area = (x2 - x1) * (y2 - y1)
-        
-#         if (box_area > 100 and box_area < (orig_w * orig_h * 0.8) and  
-#             (x2 - x1) > 10 and (y2 - y1) > 10 and x2 > x1 and y2 > y1):
+            # Le coordinate di Qwen sono scalate da 0 a 1000.
+            x1 = (xmin / 1000.0) * img_w
+            y1 = (ymin / 1000.0) * img_h
+            x2 = (xmax / 1000.0) * img_w
+            y2 = (ymax / 1000.0) * img_h
             
-#             boxes_xyxy.append([x1, y1, x2, y2])
-#             phrases.append(object_name.strip().lower())  # Ensure correct class label
-#             confidence_scores.append(score.item())
-#         else:
-#             print(f"    Filtered out box: area={box_area:.1f}, dims={x2-x1:.1f}x{y2-y1:.1f}, score={score.item():.3f}")
+            boxes_xyxy.append([x1, y1, x2, y2])
+            phrases.append(label)
+            scores.append(1.0)
+    except json.JSONDecodeError as e:
+        print(f"Errore di parsing JSON da Qwen: {e}. Testo parsato: {clean_text}")
+    except KeyError as e:
+        print(f"Chiave mancante nel JSON di Qwen: {e}")
 
-#     print(f"    Final results for '{object_name}': {len(boxes_xyxy)} boxes")
-    
-#     return boxes_xyxy, phrases, confidence_scores
-
-
-# def detect_objects_with_grounded_dino(model, transform, image, text_prompt, box_threshold=0.25, text_threshold=0.2, device='cuda'):
-#     """Use Grounded DINO v1 to detect objects one by one, ensuring bbox and label match perfectly"""
-    
-#     # Parse object names
-#     object_names = [obj.strip().lower() for obj in text_prompt.strip('.').split('.') if obj.strip()]
-
-    
-#     all_boxes = []
-#     all_phrases = []
-#     all_scores = []
-    
-#     # Detect each object individually
-#     for obj_name in object_names:
-#         boxes, phrases, scores = detect_objects_with_grounded_dino_single(
-#             model, transform, image, obj_name, box_threshold, device
-#         )
-        
-#         all_boxes.extend(boxes)
-#         all_phrases.extend(phrases)
-#         all_scores.extend(scores)
-    
-#     # Apply NMS to remove overlapping detections
-#     if len(all_boxes) > 1:
-#         all_boxes, all_phrases, all_scores = apply_nms(all_boxes, all_phrases, all_scores, iou_threshold=0.5)
-    
-#     return all_boxes, all_phrases, all_scores
-
-def init_florence2_model(device='cuda'):
-    """Initialize Microsoft Florence-2-large using native Hugging Face integration"""
-    print("Inizializzazione di Florence-2-large (Nativa)...")
-    model_id = "microsoft/Florence-2-large"
-    
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, 
-        trust_remote_code=True,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-    ).eval().to(device)
-    
-    processor = AutoProcessor.from_pretrained(
-        model_id, 
-        trust_remote_code=True
-    )
-    
-    print("Florence-2-large caricato con successo!")
-    return model, processor
-
-
-def detect_objects_with_florence2(model, processor, image, text_prompt, device='cuda'):
-    """Use Florence-2 for Caption to Phrase Grounding"""
-    
-    # 1. Preparazione Immagine
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image_pil = Image.fromarray(image_rgb)
-    
-    # 2. Configurazione Task e Prompt
-    task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
-    prompt = f"{task_prompt} {text_prompt}"
-    
-    # Il processor nativo gestisce automaticamente il resize quadrato e il padding
-    inputs = processor(text=prompt, images=image_pil, return_tensors="pt").to(device)
-    
-    # Garantiamo l'allineamento dei tipi numerici per i tensori visivi
-    inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
-    
-    # 3. Generazione (Beam Search supportato nativamente)
-    with torch.no_grad():
-        generated_ids = model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=inputs["pixel_values"],
-            max_new_tokens=1024,
-            early_stopping=False,
-            do_sample=False,
-            num_beams=3,
-        )
-        
-    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-    
-    print(f"\n[DEBUG FLORENCE RAW OUTPUT]: {generated_text}")
-    
-    # 4. Post-processing nativo (ri-scala i box automaticamente alle dimensioni originali)
-    parsed_answer = processor.post_process_generation(
-        generated_text, 
-        task=task_prompt, 
-        image_size=(image_pil.width, image_pil.height)
-    )
-    
-    results = parsed_answer.get(task_prompt, {})
-    bboxes = results.get('bboxes', [])
-    labels = results.get('labels', [])
-    
-    boxes_xyxy = []
-    phrases = []
-    scores = [] 
-    
-    for box, label in zip(bboxes, labels):
-        boxes_xyxy.append(box)
-        phrases.append(label.lower())
-        scores.append(1.0) 
-        
     return boxes_xyxy, phrases, scores
-
 
 
 def apply_nms(boxes, phrases, scores, iou_threshold=0.5):
     """Apply Non-Maximum Suppression to remove overlapping detection boxes"""
     if len(boxes) == 0:
         return [], [], []
-    
+
     # Convert to numpy arrays
     boxes = np.array(boxes)
     scores = np.array(scores)
-    
+
     # Sort by confidence
     indices = np.argsort(scores)[::-1]
-    
+
     keep = []
     while len(indices) > 0:
         # Select box with highest confidence
         current = indices[0]
         keep.append(current)
-        
+
         if len(indices) == 1:
             break
-            
+
         # Calculate IoU with other boxes
         current_box = boxes[current]
         other_boxes = boxes[indices[1:]]
-        
+
         ious = []
         for other_box in other_boxes:
             iou = get_iou(current_box, other_box)
             ious.append(iou)
-        
+
         # Keep boxes with IoU below threshold
         ious = np.array(ious)
         indices = indices[1:][ious < iou_threshold]
-    
+
     # Return kept detections
     filtered_boxes = [boxes[i].tolist() for i in keep]
     filtered_phrases = [phrases[i] for i in keep]
     filtered_scores = [scores[i] for i in keep]
-    
+
     return filtered_boxes, filtered_phrases, filtered_scores
 
 
@@ -620,16 +357,16 @@ def filter_and_deduplicate_objects(objects, confidence_threshold=0.45, iou_thres
     """Filter and deduplicate detected objects"""
     if not objects:
         return []
-    
+
     # Sort by confidence
     objects = sorted(objects, key=lambda x: x.get('confidence', 0), reverse=True)
-    
+
     filtered_objects = []
     for obj in objects:
         # Confidence filtering
         if obj.get('confidence', 0) < confidence_threshold:
             continue
-            
+
         # Check for overlap with existing objects
         is_duplicate = False
         for existing_obj in filtered_objects:
@@ -641,7 +378,7 @@ def filter_and_deduplicate_objects(objects, confidence_threshold=0.45, iou_thres
                 else:
                     is_duplicate = True
                 break
-        
+
         if not is_duplicate:
             # Check for duplicate object names (could be different detections of same object)
             class_name = obj['class_name']
@@ -654,7 +391,7 @@ def filter_and_deduplicate_objects(objects, confidence_threshold=0.45, iou_thres
                     center1 = [(bbox1[0] + bbox1[2])/2, (bbox1[1] + bbox1[3])/2]
                     center2 = [(bbox2[0] + bbox2[2])/2, (bbox2[1] + bbox2[3])/2]
                     distance = ((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)**0.5
-                    
+
                     # If distance too close, consider as duplicate detection
                     if distance < 50:  # Reduced to 50 pixel distance threshold
                         if obj.get('confidence', 0) > existing_obj.get('confidence', 0):
@@ -662,10 +399,10 @@ def filter_and_deduplicate_objects(objects, confidence_threshold=0.45, iou_thres
                         else:
                             name_duplicate = True
                         break
-            
+
             if not name_duplicate:
                 filtered_objects.append(obj)
-    
+
     return filtered_objects
 
 
@@ -688,7 +425,7 @@ OBJECTS_CLASS_ID = {
     'left_hand': 1,
     'object_in_left_hand': 2,
     'left_hand_2nd_obj': 3,
-    'right_hand': 4, 
+    'right_hand': 4,
     'object_in_right_hand': 5,
     'right_hand_2nd_obj': 6,
 }
@@ -701,7 +438,7 @@ PERSON            = (255, 0, 255)
 RIGHT_HAND_COLOR  = (255, 0, 0)
 LEFT_HAND_COLOR   = (0, 0, 255) # rgb
 FIRST_COLOR  = (255, 176, 0)
-SECOND_COLOR = (0, 170, 100) 
+SECOND_COLOR = (0, 170, 100)
 
 COLOR_PALETTE = [
     (255, 0, 255), # purple
@@ -722,17 +459,17 @@ def get_original_video_fps(video_name, video_base_dir):
     possible_paths = [
         os.path.join(video_base_dir, 'Videos_crop', f'{video_name}.mp4'),
     ]
-    
+
     for video_path in possible_paths:
         if os.path.exists(video_path):
             try:
                 # Use ffprobe to get video fps
                 cmd = [
-                    "ffprobe", 
-                    "-v", "error", 
+                    "ffprobe",
+                    "-v", "error",
                     "-select_streams", "v:0",
-                    "-show_entries", "stream=r_frame_rate", 
-                    "-of", "csv=p=0", 
+                    "-show_entries", "stream=r_frame_rate",
+                    "-of", "csv=p=0",
                     video_path
                 ]
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -748,7 +485,7 @@ def get_original_video_fps(video_name, video_base_dir):
             except Exception as e:
                 print(f"Failed to get FPS from {video_path}: {e}")
                 continue
-    
+
     # Fallback: calculate FPS based on frame count and estimated duration
     print(f"Could not find original video for {video_name}, using fallback calculation")
     return None
@@ -782,14 +519,14 @@ HEX_COLOR_PALETTE = BASE_HEX_COLORS + OBJECT_HEX_COLORS
 def update_color_palette_for_video(video_objects):
     """Update color palette for detected objects in video"""
     global HEX_COLOR_PALETTE, OBJECTS_CLASS_ID
-    
+
     for i, obj_name in enumerate(video_objects):
         OBJECTS_CLASS_ID[obj_name] = 200 + i
-    
+
     base_colors = ['#FF00FF', '#FF0000', '#FFB000', '#00AA64', '#0000FF', '#FFB000', '#00AA64']
     object_colors = generate_colors(len(video_objects))
     HEX_COLOR_PALETTE = base_colors + object_colors
-    
+
     return HEX_COLOR_PALETTE
 
 
@@ -797,7 +534,7 @@ def init_vggt_model(device='cuda'):
     """Initialize VGGT model for camera motion detection"""
     if not VGGT_AVAILABLE:
         return None
-        
+
     # Load VGGT model - using the official checkpoint from Hugging Face
     model = VGGT()
     _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
@@ -811,14 +548,14 @@ def init_vggt_model(device='cuda'):
 def detect_camera_motion(vggt_model, image_paths, motion_threshold=0.1, sample_frames=8, device='cuda'):
     """
     Use VGGT to detect camera motion in video
-    
+
     Args:
         vggt_model: Initialized VGGT model
         image_paths: List of video frame paths
         motion_threshold: Camera motion threshold (threshold for translation and rotation changes)
         sample_frames: Number of frames to sample (for efficiency, not processing all frames)
         device: Computation device
-        
+
     Returns:
         tuple: (is_moving, motion_score, camera_poses)
             - is_moving: bool, whether camera is moving
@@ -827,7 +564,7 @@ def detect_camera_motion(vggt_model, image_paths, motion_threshold=0.1, sample_f
     """
     if vggt_model is None or len(image_paths) < 2:
         return False, 0.0, []
-    
+
     # Sample frames for efficiency
     total_frames = len(image_paths)
     if total_frames > sample_frames:
@@ -835,9 +572,9 @@ def detect_camera_motion(vggt_model, image_paths, motion_threshold=0.1, sample_f
         sampled_paths = [image_paths[i] for i in indices]
     else:
         sampled_paths = image_paths
-    
+
     torch.cuda.empty_cache()
-    
+
     images_tensor_list = []
     for img_path in sampled_paths:
         image = Image.open(img_path).convert('RGB')
@@ -845,66 +582,66 @@ def detect_camera_motion(vggt_model, image_paths, motion_threshold=0.1, sample_f
         image_array = np.array(image, dtype=np.float16)
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float() / 255.0
         images_tensor_list.append(image_tensor)
-    
+
     images_tensor = torch.stack(images_tensor_list).to(device)
     del images_tensor_list
-    
+
     with torch.no_grad():
         with torch.cuda.amp.autocast(dtype=torch.bfloat16):
             images_batch = images_tensor[None]  # add batch dimension [1, N, 3, H, W]
             # Aggregate features
             aggregated_tokens_list, ps_idx = vggt_model.aggregator(images_batch)
-            
+
             # Predict camera poses
             pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
-            
+
             # Convert to extrinsic and intrinsic matrices
             extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc, images_tensor.shape[-2:])
-        
+
         del images_tensor, images_batch, aggregated_tokens_list, pose_enc
         # torch.cuda.empty_cache()  # Reduced frequency for better performance
-        
+
     camera_poses = []
     extrinsic = extrinsic.squeeze(0).cpu().numpy()  # Remove batch dimension
-    
+
     for i in range(len(extrinsic)):
         camera_matrix = extrinsic[i]  # 4x4 matrix
         translation = camera_matrix[:3, 3]  # Camera position
         rotation = camera_matrix[:3, :3]   # Camera orientation
-        
+
         camera_poses.append({
             'translation': translation,
             'rotation': rotation,
             'matrix': camera_matrix
         })
-    
+
     translation_changes = []
     rotation_changes = []
-    
+
     for i in range(1, len(camera_poses)):
         pos_change = np.linalg.norm(
             camera_poses[i]['translation'] - camera_poses[i-1]['translation']
         )
         translation_changes.append(pos_change)
-        
+
         rot_change = np.linalg.norm(
-            camera_poses[i]['rotation'] - camera_poses[i-1]['rotation'], 
+            camera_poses[i]['rotation'] - camera_poses[i-1]['rotation'],
             ord='fro'
         )
         rotation_changes.append(rot_change)
-    
+
     avg_translation_change = np.mean(translation_changes) if translation_changes else 0
     avg_rotation_change = np.mean(rotation_changes) if rotation_changes else 0
     max_translation_change = np.max(translation_changes) if translation_changes else 0
     max_rotation_change = np.max(rotation_changes) if rotation_changes else 0
-    
-    motion_score = (avg_translation_change + avg_rotation_change + 
+
+    motion_score = (avg_translation_change + avg_rotation_change +
                    max_translation_change * 0.5 + max_rotation_change * 0.5)
-    
+
     is_moving = motion_score > motion_threshold
-    
+
     print(f"Camera motion: score={motion_score:.4f}, threshold={motion_threshold}, is_moving={is_moving}")
-    
+
     return is_moving, motion_score, camera_poses
 
 
@@ -921,16 +658,16 @@ def get_cached_image(image_path, cache, cache_limit=100):
     """
     if image_path in cache:
         return cache[image_path]
-    
+
     # Load image
     img = cv2.imread(str(image_path))
-    
+
     # Manage cache size
     if len(cache) >= cache_limit:
         # Remove oldest entry (FIFO)
         oldest_key = next(iter(cache))
         del cache[oldest_key]
-    
+
     # Cache image
     cache[image_path] = img
     return img
@@ -946,69 +683,32 @@ def preload_video_images(img_paths, max_preload=50):
     """
     preloaded = {}
     load_count = min(len(img_paths), max_preload)
-    
+
 
     for i in range(load_count):
         img_path = img_paths[i]
         img = cv2.imread(str(img_path))
         if img is not None:
             preloaded[img_path] = img
-    
-    return preloaded
 
-# def batch_vitpose_inference(cpm, images, bboxes_list, batch_size=4):
-#     """
-#     Batch inference for ViTPose to improve efficiency
-#     Args:
-#         cpm: ViTPose model
-#         images: List of images
-#         bboxes_list: List of bboxes for each image
-#         batch_size: Batch size for inference
-#     Returns:
-#         List of pose results
-#     """
-#     results = []
-    
-#     for i in range(0, len(images), batch_size):
-#         batch_images = images[i:i + batch_size]
-#         batch_bboxes = bboxes_list[i:i + batch_size]
-        
-#         # Process batch
-#         batch_results = []
-#         for img, bboxes in zip(batch_images, batch_bboxes):
-#             try:
-#                 img_uint8 = img.astype(np.uint8)
-#                 bboxes_float32 = bboxes.astype(np.float32)
-                
-#                 with torch.cuda.amp.autocast(enabled=False):
-#                     vitposes_out = cpm.predict_pose(
-#                         img_uint8,
-#                         [bboxes_float32],
-#                     )
-#                 batch_results.append(vitposes_out)
-#             except Exception as e:
-#                 batch_results.append([])
-        
-#         results.extend(batch_results)
-    
-#     return results
+    return preloaded
 
 
 def should_skip_video_due_to_camera_motion(vggt_model, video_dir, motion_threshold=0.1, sample_frames=8):
 
     if vggt_model is None:
         return False, 0.0, "VGGT model not available"
-    
+
     img_ls = glob.glob(f'{video_dir}/*.jpg')
     img_ls.sort()
-    
+
     if len(img_ls) < 2:
         return False, 0.0, "Insufficient frames for motion detection"
-    
+
     is_moving, motion_score, _ = detect_camera_motion(
         vggt_model, img_ls, motion_threshold=motion_threshold, sample_frames=sample_frames
     )
-    
+
     if is_moving:
         reason = f"Camera is moving (score: {motion_score:.4f} > threshold: {motion_threshold})"
         return True, motion_score, reason
@@ -1029,7 +729,7 @@ def check_and_merge_existing_markers(finished_dir, video_name):
     """
     Check for existing failure markers and merge them to avoid duplicates.
     Returns the path to use for the failure marker.
-    
+
     Priority order (keep the most informative one):
     1. camera_motion_skipped (has detailed reason)
     2. other specific failure markers
@@ -1037,27 +737,27 @@ def check_and_merge_existing_markers(finished_dir, video_name):
     """
     base_path = os.path.join(finished_dir, video_name)
     camera_motion_path = os.path.join(finished_dir, f'{video_name}_camera_motion_skipped')
-    
+
     # Check what already exists
     existing_markers = []
     if os.path.exists(base_path):
         existing_markers.append(('generic', base_path))
     if os.path.exists(camera_motion_path):
         existing_markers.append(('camera_motion', camera_motion_path))
-    
+
     # Check for other specific markers (future extensibility)
     for item in os.listdir(finished_dir):
         if item.startswith(f'{video_name}_') and item != f'{video_name}_camera_motion_skipped':
             full_path = os.path.join(finished_dir, item)
             if os.path.isdir(full_path):
                 existing_markers.append(('other', full_path))
-    
+
     if len(existing_markers) <= 1:
         return base_path  # No conflict, use generic path
-    
+
     # Multiple markers exist - merge them
     print(f"Found multiple failure markers for {video_name}: {[m[0] for m in existing_markers]}")
-    
+
     # Keep camera_motion_skipped if it exists (most informative)
     if any(marker[0] == 'camera_motion' for marker in existing_markers):
         keep_path = camera_motion_path
@@ -1066,7 +766,7 @@ def check_and_merge_existing_markers(finished_dir, video_name):
         # Keep the first one found
         keep_path = existing_markers[0][1]
         print(f"Keeping {existing_markers[0][0]} marker")
-    
+
     # Remove other markers
     for marker_type, marker_path in existing_markers:
         if marker_path != keep_path:
@@ -1081,7 +781,7 @@ def check_and_merge_existing_markers(finished_dir, video_name):
                         print(f"Removed empty duplicate marker: {marker_path}")
             except Exception as e:
                 print(f"Warning: Could not remove duplicate marker {marker_path}: {e}")
-    
+
     return keep_path
 
 
@@ -1089,7 +789,7 @@ def check_and_merge_existing_markers(finished_dir, video_name):
 
 
 if __name__ == '__main__':
-    
+
     # Initialize timing statistics
     timing_stats = {
         'model_loading': 0,
@@ -1103,34 +803,47 @@ if __name__ == '__main__':
         'saving_results': 0,
         'total_video_processing': 0
     }
-    
+
     script_start_time = time.time()
 
-    cur_parser = argparse.ArgumentParser(description='demo code')
-    cur_parser.add_argument('--video_dir', type=str, default='', help='video directionary', required=True)
-    cur_parser.add_argument('--single_video_name', type=str, default='', help='process only this specific video (video name without extension)')
-    cur_parser.add_argument('--video_names', type=str, nargs='+', default=[], help='process only these specific videos (video names without extension)')
-    
-    cur_parser.add_argument('--chunk_num', type=int, default=10, help='split videos into chunks')
-    cur_parser.add_argument('--chunk_idx', type=int, default=0, help='which chunk to process (use -1 to process all videos)')
-    cur_parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
-    
-    # VGGT Camera Motion Detection Arguments
-    cur_parser.add_argument('--enable_camera_motion_detection', action='store_true', 
-                           help='Enable VGGT-based camera motion detection to skip videos with moving cameras')
-    cur_parser.add_argument('--camera_motion_threshold', type=float, default=0.3, 
-                           help='Threshold for camera motion detection (default: 0.3). Lower values are more sensitive.')
-    cur_parser.add_argument('--camera_motion_sample_frames', type=int, default=4,
-                           help='Number of frames to sample for camera motion detection (default: 4, reduced for memory)')
-    
-    # Memory optimization arguments
-    # cur_parser.add_argument('--disable_qwen', action='store_true', 
-    #                        help='Disable Qwen2-VL-72B model to save GPU memory (will use fallback objects)')
-    cur_parser.add_argument('--max_video_frames', type=int, default=300,
-                           help='Skip videos with more than this many frames (default: 300, reduced from 500)')
-    
-    cur_args = cur_parser.parse_args()
-    
+    # cur_parser = argparse.ArgumentParser(description='demo code')
+    # cur_parser.add_argument('--video_dir', type=str, default='', help='video directionary', required=True)
+    # cur_parser.add_argument('--single_video_name', type=str, default='', help='process only this specific video (video name without extension)')
+    # cur_parser.add_argument('--video_names', type=str, nargs='+', default=[], help='process only these specific videos (video names without extension)')
+
+    # cur_parser.add_argument('--chunk_num', type=int, default=10, help='split videos into chunks')
+    # cur_parser.add_argument('--chunk_idx', type=int, default=0, help='which chunk to process (use -1 to process all videos)')
+    # cur_parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
+
+    # # VGGT Camera Motion Detection Arguments
+    # cur_parser.add_argument('--enable_camera_motion_detection', action='store_true',
+    #                        help='Enable VGGT-based camera motion detection to skip videos with moving cameras')
+    # cur_parser.add_argument('--camera_motion_threshold', type=float, default=0.3,
+    #                        help='Threshold for camera motion detection (default: 0.3). Lower values are more sensitive.')
+    # cur_parser.add_argument('--camera_motion_sample_frames', type=int, default=4,
+    #                        help='Number of frames to sample for camera motion detection (default: 4, reduced for memory)')
+
+    # # Memory optimization arguments
+    # # cur_parser.add_argument('--disable_qwen', action='store_true',
+    # #                        help='Disable Qwen2-VL-72B model to save GPU memory (will use fallback objects)')
+    # cur_parser.add_argument('--max_video_frames', type=int, default=300,
+    #                        help='Skip videos with more than this many frames (default: 300, reduced from 500)')
+
+    # cur_args = cur_parser.parse_args()
+
+    video_dir='/content/drive/MyDrive/AA-STAL/data_pipeline/DATA_ROOT'
+    single_video_name=''
+    video_names=[]
+    chunk_num=10
+    chunk_idx=-1
+    body_detector='vitdet'
+    enable_camera_motion_detection=False #da cambiare
+    camera_motion_threshold=0.3
+    camera_motion_sample_frames=4
+    disable_qwen=False
+    max_video_frames=300
+
+
     # Auto-detect accelerate environment
     accelerator = None
     # if ACCELERATE_AVAILABLE:
@@ -1138,13 +851,13 @@ if __name__ == '__main__':
     #     accelerator = Accelerator()
     #     device = accelerator.device
     #     total_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        
+
     #     print(f"ACCELERATE DETECTED:")
     #     print(f"   • Total GPUs available: {total_gpus}")
     #     print(f"   • Accelerate processes: {accelerator.num_processes}")
     #     print(f"   • Current process index: {accelerator.process_index}")
     #     print(f"   • Current device: {device}")
-        
+
     #     if accelerator.num_processes == 1 and total_gpus > 1:
     #         print(f"Using single process mode")
     #         print(f"   Use: accelerate launch --num_processes {total_gpus} script.py")
@@ -1159,15 +872,14 @@ if __name__ == '__main__':
 
     print("Loading models...", flush=True)
     model_loading_start = time.time()
-    
+
     # Memory optimization
     if torch.cuda.is_available():
         # Set PyTorch memory management for better fragmentation handling
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.cuda.empty_cache()
-        
+
         # Print GPU memory info
         if accelerator is not None:
             device_idx = accelerator.local_process_index
@@ -1175,9 +887,10 @@ if __name__ == '__main__':
             reserved_mem = torch.cuda.memory_reserved(device_idx) / (1024**3)
             allocated_mem = torch.cuda.memory_allocated(device_idx) / (1024**3)
             print(f"GPU {device_idx} Memory: {total_mem:.2f}GB total, {reserved_mem:.2f}GB reserved, {allocated_mem:.2f}GB allocated")
-    
+
     # Load detector
-    if cur_args.body_detector == 'vitdet':
+    # if cur_args.body_detector == 'vitdet':
+    if body_detector == 'vitdet':
         from detectron2.config import LazyConfig
         cfg_path = f'configs/cascade_mask_rcnn_vitdet_h_75ep.py'
         detectron2_cfg = LazyConfig.load(str(cfg_path))
@@ -1185,7 +898,8 @@ if __name__ == '__main__':
         for i in range(3):
             detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
         detector = DefaultPredictor_Lazy(detectron2_cfg)
-    elif cur_args.body_detector == 'regnety':
+    # elif cur_args.body_detector == 'regnety':
+    elif body_detector == 'regnety':
         from detectron2 import model_zoo
         from detectron2.config import get_cfg
         detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
@@ -1193,55 +907,35 @@ if __name__ == '__main__':
         detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
         detector       = DefaultPredictor_Lazy(detectron2_cfg)
 
-    # keypoint detector
-    # cpm = ViTPoseModel(device)
-    
-    # hands23 detector
-    # hands23_model = init_hands23()
-    
     # sam2
     sam2_checkpoint = "./saved_models/sam2_models/sam2.1_hiera_small.pt"
     model_cfg       = "configs/sam2.1/sam2.1_hiera_s.yaml"
-    
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore")
         torch.autocast(device_type='cuda', dtype=torch.float16).__enter__()
-    
+
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device ='cuda', apply_postprocessing=False)
     # sam2 image model
     image_predictor = SAM2ImagePredictor(sam2)
     # sam video model
     predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
-    
+
     predictor.to(dtype=torch.float16)
-    
+
     # Image cache for faster access
     image_cache = {}
 
-    
+
     # Models
     print("Loading models...")
-    
-    # if cur_args.disable_qwen:
-    #     print("Qwen2-VL-72B model disabled to save GPU memory")
-    #     qwen_model, qwen_processor = None, None
-    # else:
-    #     print("Loading Qwen2-VL-72B model...")
-    #     qwen_model, qwen_processor = init_qwen_model(device)
-    #     if qwen_model is not None and accelerator is not None:
-    #         qwen_model = accelerator.prepare(qwen_model)
-    
-    # grounded_dino_config = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-    # grounded_dino_checkpoint = "GroundingDINO/weights/groundingdino_swint_ogc.pth"
-    # grounded_dino_model, grounded_dino_transform = init_grounded_dino(
-    #     grounded_dino_config, grounded_dino_checkpoint, device
-    # )
 
-    qwen_model, qwen_processor = init_qwen2_5_vl_model(device)
+    qwen_model, qwen_processor = init_qwen_model(device)
 
     # VGGT model for camera motion detection
     vggt_model = None
-    if cur_args.enable_camera_motion_detection:
+    # if cur_args.enable_camera_motion_detection:
+    if enable_camera_motion_detection:
         print("Loading VGGT model for camera motion detection...")
         vggt_model = init_vggt_model(device)
         if vggt_model is not None:
@@ -1254,39 +948,40 @@ if __name__ == '__main__':
     model_loading_time = time.time() - model_loading_start
     timing_stats['model_loading'] = model_loading_time
     print(f"Models loaded in {model_loading_time:.1f}s", flush=True)
-    
-    video_dir  = cur_args.video_dir
+
+    # video_dir  = cur_args.video_dir
     save_dir            = os.path.join(video_dir, 'video_general_obj_det_finished')
     finished_dir        = os.path.join(video_dir, 'ignore')
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(finished_dir, exist_ok=True)
-    
+
     # Load video list
     decode_dir = os.path.join(video_dir, 'Videos_crop_decode')
     print(f'Input directory: {decode_dir}')
     video_ls = glob.glob(f'{decode_dir}/*')
-    
-    video_ls = video_ls
+
     random.seed(0)
     random.shuffle(video_ls)
-    
+
     # Check if processing specific videos
-    if cur_args.video_names:
+    # if cur_args.video_names:
+    if video_names:
         # Filter to only the specified videos
-        target_video_names = set(cur_args.video_names)
+        # target_video_names = set(cur_args.video_names)
+        target_video_names = set(video_names)
         videos_to_process = []
         found_videos = set()
-        
+
         for video_path in video_ls:
             video_name = os.path.basename(video_path)
             if video_name in target_video_names:
                 videos_to_process.append(video_path)
                 found_videos.add(video_name)
-        
+
         missing_videos = target_video_names - found_videos
         if missing_videos:
             print(f'WARNING: Videos not found in {decode_dir}: {list(missing_videos)}')
-        
+
         if videos_to_process:
             print(f'Processing SPECIFIC videos: {len(videos_to_process)} videos from provided list')
             print(f'Videos to process: {[os.path.basename(v) for v in videos_to_process]}')
@@ -1294,38 +989,46 @@ if __name__ == '__main__':
             print(f'ERROR: None of the specified videos found in {decode_dir}')
             print(f'Available videos: {[os.path.basename(v) for v in video_ls[:5]]}...')
             exit(1)
-    elif cur_args.single_video_name:
+    # elif cur_args.single_video_name:
+    elif single_video_name:
         # Filter to only the specified video
         target_video_path = None
         for video_path in video_ls:
             video_name = os.path.basename(video_path)
-            if video_name == cur_args.single_video_name:
+            # if video_name == cur_args.single_video_name:
+            if video_name == single_video_name:
                 target_video_path = video_path
                 break
-        
+
         if target_video_path:
             videos_to_process = [target_video_path]
-            print(f'Processing SINGLE video: {cur_args.single_video_name}')
+            # print(f'Processing SINGLE video: {cur_args.single_video_name}')
+            print(f'Processing SINGLE video: {single_video_name}')
         else:
-            print(f'ERROR: Video {cur_args.single_video_name} not found in {decode_dir}')
+            # print(f'ERROR: Video {cur_args.single_video_name} not found in {decode_dir}')
+            print(f'ERROR: Video {single_video_name} not found in {decode_dir}')
             print(f'Available videos: {[os.path.basename(v) for v in video_ls[:5]]}...')
             exit(1)
-    elif cur_args.chunk_idx == -1:
+    # elif cur_args.chunk_idx == -1:
+    elif chunk_idx == -1:
         videos_to_process = video_ls
         print(f'Processing ALL {len(videos_to_process)} videos')
     else:
-        video_chunk_ls = chunk_into_n(video_ls, cur_args.chunk_num)
-        videos_to_process = video_chunk_ls[cur_args.chunk_idx]
-        print(f'Processing chunk {cur_args.chunk_idx}/{cur_args.chunk_num-1} ({len(videos_to_process)} videos)')
-    
+        # video_chunk_ls = chunk_into_n(video_ls, cur_args.chunk_num)
+        # videos_to_process = video_chunk_ls[cur_args.chunk_idx]
+        # print(f'Processing chunk {cur_args.chunk_idx}/{cur_args.chunk_num-1} ({len(videos_to_process)} videos)')
+        video_chunk_ls = chunk_into_n(video_ls, chunk_num)
+        videos_to_process = video_chunk_ls[chunk_idx]
+        print(f'Processing chunk {chunk_idx}/{chunk_num-1} ({len(videos_to_process)} videos)')
+
     # Split videos across accelerator processes if using accelerate
     # if accelerator is not None and accelerator.num_processes > 1:
     #     total_videos = len(videos_to_process)
     #     videos_to_process = [videos_to_process[i] for i in range(accelerator.process_index, len(videos_to_process), accelerator.num_processes)]
-        
+
     #     print(f'VIDEO DISTRIBUTION:')
     #     print(f'   • Total: {total_videos}, Per GPU: ~{total_videos // accelerator.num_processes}, GPU {accelerator.process_index}: {len(videos_to_process)}')
-        
+
     #     # Show first few video names for verification
     #     if videos_to_process:
     #         print(f'   • Processing {len(videos_to_process)} videos on GPU {accelerator.process_index}')
@@ -1334,18 +1037,18 @@ if __name__ == '__main__':
 
     skipped_videos = []
     skipped_reasons = {}
-    
+
     total_video_processing_start = time.time()
 
     for video_idx, video_dir in enumerate(tqdm(videos_to_process)):
         video_start_time = time.time()
         video_name = video_dir.split('/')[-1].split('.')[0]
-        
+
         if accelerator is not None and accelerator.num_processes > 1:
             print(f'GPU {accelerator.process_index}: Processing video {video_idx+1}/{len(videos_to_process)}: {video_name}', flush=True)
         else:
             print(f'Processing video {video_idx+1}/{len(videos_to_process)}: {video_name}', flush=True)
-        
+
         # Optimized: reduce GPU memory clearing frequency
         # torch.cuda.empty_cache()
 
@@ -1353,49 +1056,56 @@ if __name__ == '__main__':
 
         out_path = os.path.join(save_dir, video_name+'.mp4')
         pkl_path = os.path.join(save_dir, video_name+'.json')
-        
+
         # Check for any existing failure markers and merge if necessary
         finished_path = check_and_merge_existing_markers(finished_dir, video_name)
-        
+
         # Skip if already processed successfully or marked as failed
         if os.path.exists(out_path):
             continue  # Successfully processed
         if os.path.exists(finished_path):
             continue  # Already marked as failed
-        
+
         # Also check for camera motion marker specifically
         camera_motion_marker = os.path.join(finished_dir, f'{video_name}_camera_motion_skipped')
         if os.path.exists(camera_motion_marker):
-            continue  # Already marked as camera motion skipped 
+            continue  # Already marked as camera motion skipped
 
-    
+
         img_ls = glob.glob(f'{video_dir}/*.jpg')
         img_ls.sort()
-        
-        if len(img_ls) > cur_args.max_video_frames: 
+
+        # if len(img_ls) > cur_args.max_video_frames:
+        if len(img_ls) > max_video_frames:
             print(f'Skipping video: Too many frames ({len(img_ls)})')
             os.makedirs(finished_path, exist_ok=True)
             continue
-        
+
         # Preload images for faster access (optimization)
-        video_image_cache = preload_video_images(img_ls, max_preload=min(50, len(img_ls)))
-        
+        video_image_cache = preload_video_images(img_ls, max_preload=min(10, len(img_ls)))
+        first_img = get_cached_image(img_ls[0], video_image_cache)
+        img_height, img_width = first_img.shape[:2]
+
         # Camera Motion Detection
         camera_motion_start = time.time()
-        if cur_args.enable_camera_motion_detection and vggt_model is not None:
+        # if cur_args.enable_camera_motion_detection and vggt_model is not None:
+        if enable_camera_motion_detection and vggt_model is not None:
             should_skip, motion_score, skip_reason = should_skip_video_due_to_camera_motion(
-                vggt_model, video_dir, 
-                motion_threshold=cur_args.camera_motion_threshold,
-                sample_frames=cur_args.camera_motion_sample_frames
+                vggt_model, video_dir,
+                # motion_threshold=cur_args.camera_motion_threshold,
+                # sample_frames=cur_args.camera_motion_sample_frames
+                motion_threshold=camera_motion_threshold,
+                sample_frames=camera_motion_sample_frames
             )
-            
+
             if should_skip:
                 print(f'Skipping video: Camera motion')
                 skipped_videos.append(video_name)
                 skipped_reasons[video_name] = {
                     'reason': 'Camera motion detected',
                     'motion_score': motion_score,
-                    'threshold': cur_args.camera_motion_threshold,
+                    # 'threshold': cur_args.camera_motion_threshold,
+                    'threshold': camera_motion_threshold,
                     'detail': skip_reason
                 }
                 # Use camera_motion_skipped marker (more informative than generic)
@@ -1404,21 +1114,23 @@ if __name__ == '__main__':
                 with open(os.path.join(camera_motion_marker, 'skip_reason.txt'), 'w') as f:
                     f.write(f'Video skipped due to camera motion\n')
                     f.write(f'Motion score: {motion_score:.4f}\n')
-                    f.write(f'Threshold: {cur_args.camera_motion_threshold}\n')
+
+                    # f.write(f'Threshold: {cur_args.camera_motion_threshold}\n')
+                    f.write(f'Threshold: {camera_motion_threshold}\n')
                     f.write(f'Detail: {skip_reason}\n')
-                
+
                 # Update finished_path to point to the camera motion marker for consistency
                 finished_path = camera_motion_marker
                 continue
             else:
                 print(f'Processing video')
-        
+
         camera_motion_time = time.time() - camera_motion_start
         timing_stats['camera_motion_detection'] += camera_motion_time
-        
+
         # Object Analysis and Detection
         object_analysis_start = time.time()
-        
+
         # --- NEW ACTOR-CENTRIC ---
         print_step_header("Detecting Actors in first frame", 1)
 
@@ -1428,18 +1140,19 @@ if __name__ == '__main__':
 
         first_frame_objects = []
         if len(img_ls) > 0:
-            first_img = get_cached_image(img_ls[0], video_image_cache)
-            img_height, img_width, _ = first_img.shape
-
             # --- HUMAN-CENTRIC DETECTION WITH DETECTRON2 ---
             with torch.cuda.amp.autocast(enabled=False):
                 d2_out = detector(first_img)
-            
+
             det_instances = d2_out['instances']
             valid_human_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.70)
             human_bboxes = det_instances.pred_boxes.tensor[valid_human_idx].cpu().numpy().astype(np.float32)
             human_scores = det_instances.scores[valid_human_idx].cpu().numpy().astype(np.float32)
-            
+
+            del d2_out
+            del det_instances
+            torch.cuda.empty_cache()
+
             for bbox, score in zip(human_bboxes, human_scores):
                 if get_bbox_area(bbox) > 500:
                     first_frame_objects.append({
@@ -1450,33 +1163,15 @@ if __name__ == '__main__':
                     })
 
 
-            # # --- 2. ROBOT DETECTION WITH GROUNDED-DINO ---
-            # with torch.cuda.amp.autocast(enabled=False):
-            #     r_bboxes, r_phrases, r_scores = detect_objects_with_grounded_dino(
-            #         grounded_dino_model, grounded_dino_transform, first_img, 
-            #         "humanoid_robot. robotic_arm.", box_threshold=0.45, text_threshold=0.35, device=device
-            #     )
-            
-            # for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
-            #     name = phrase.strip().lower()
-            #     if get_bbox_area(bbox) > 500 and name in ["humanoid_robot", "robotic arm"]:
-            #         class_id = 201 if "humanoid" in name else 202
-            #         first_frame_objects.append({
-            #             'bbox': bbox,
-            #             'class_name': name,
-            #             'class_id': class_id,
-            #             'confidence': float(score)
-            #         })
-
-
-
             # --- 2. ROBOT DETECTION WITH QWEN2.5-VL ---
             with torch.cuda.amp.autocast(enabled=False):
                 r_bboxes, r_phrases, r_scores = detect_objects_with_qwen2_5_vl(
                     qwen_model, qwen_processor, first_img,
                     "humanoid robot, robotic arm and autonomous mobile robot"
                 )
-            
+
+            torch.cuda.empty_cache()
+
             for bbox, phrase, score in zip(r_bboxes, r_phrases, r_scores):
                 name = phrase.strip().lower()
                 if get_bbox_area(bbox) > 500 and ("robot" in name or "arm" in name):
@@ -1487,134 +1182,83 @@ if __name__ == '__main__':
                         'class_id': class_id,
                         'confidence': float(score)
                     })
-            
+
             first_frame_objects = filter_and_deduplicate_objects(
                 first_frame_objects, confidence_threshold=0.40, iou_threshold=0.45
             )
-            
+
             for act in first_frame_objects:
                 print(f"  -> {act['class_name']} (Conf: {act['confidence']:.2f}) at {act['bbox']}")
-        
+
         if not first_frame_objects:
             os.makedirs(finished_path, exist_ok=True)
             continue
-            
+
         object_analysis_time = time.time() - object_analysis_start
         timing_stats['object_analysis_detection'] += object_analysis_time
-        
+
         # FINISH NEW ACTOR-CENTRIC
 
-        object_analysis_time = time.time() - object_analysis_start
-        timing_stats['object_analysis_detection'] += object_analysis_time
-        
-        
-        # Initial SAM2 tracking
-        initial_sam2_start = time.time()
-        print_step_header("Initial SAM2 tracking", 2)
-        tracking_success = False
-        
-        global_object_id_to_class = {}
-        
-       
-        # Reuse existing predictor instead of rebuilding (major optimization)
-        torch.cuda.empty_cache()
-        with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-            inference_state = predictor.init_state(video_path=video_dir, 
-                                                    offload_video_to_cpu=True,
-                                                    offload_state_to_cpu=True,
-                                                    async_loading_frames=True)
-            
-            ann_frame_idx = 0
-            
-            # Add object bboxes for tracking (using IDs 1000+)
-            print(f"Adding {len(first_frame_objects)} objects to SAM2 tracker with IDs 1000+")
-            for obj_idx, obj_data in enumerate(first_frame_objects):
-                obj_bbox = obj_data['bbox']
-                bbox_tensor = torch.tensor(obj_bbox, dtype=torch.float32, device='cpu')
-                obj_id = 1000 + obj_idx  # Use high IDs for objects
-                
-                global_object_id_to_class[obj_id] = obj_data['class_name']
-                print(f"  Adding object {obj_idx}: {obj_data['class_name']} (ID {obj_id}) at {obj_bbox}")
-                
-                _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                    inference_state=inference_state,
-                    frame_idx=ann_frame_idx,
-                    obj_id=obj_id,
-                    box=bbox_tensor
-                )
-                print(f"  Successfully added object {obj_data['class_name']} with ID {obj_id}")
-            
-            print(f"Final global_object_id_to_class mapping: {global_object_id_to_class}")
-
-            
-            if first_frame_objects == 0:
-                print("No objects added to SAM2 tracker, skipping propagation")
-                video_segments = {}  # Empty dictionary for consistency
-                tracking_success = True
-            else:
-                # run propagation throughout the video and collect the results in a dict
-                video_segments = {} # contain per frame detection information
-                for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-                    video_segments[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
-                tracking_success = True
-        
-        initial_sam2_time = time.time() - initial_sam2_start
-        timing_stats['initial_sam2_tracking'] += initial_sam2_time
-        
-        if not tracking_success:
-            os.makedirs(finished_path, exist_ok=True)
-            continue     
-            
-            
-            
-            # Get tracked objects from SAM2 (ID >= 1000)
-            tracked_objects = []
-            if i_idx in video_segments:
-                segments = video_segments[i_idx]
-                for obj_id in segments:
-                    if obj_id >= 1000:  # Object IDs
-                        bbox = list(sv.mask_to_xyxy(segments[obj_id])[0])
-                        if get_bbox_area(bbox) > 30:
-                            # Find corresponding object info from first_frame_objects
-                            obj_idx = obj_id - 1000
-                            if obj_idx < len(first_frame_objects):
-                                obj_data = first_frame_objects[obj_idx]
-                                x1, y1, x2, y2 = bbox
-                                bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                                tracked_objects.append({
-                                    'bbox': bbox_norm,
-                                    'class_name': obj_data['class_name'],
-                                    'class_id': obj_data['class_id'],
-                                    'track_id': obj_id
-                                })
-            
-        
         out_dir = os.path.join(save_dir, video_name)
         os.makedirs(out_dir, exist_ok=True)
-       
+
         # SAM2 propagation
         sam2_propagation_start = time.time()
-        
+
         # Check if we have any objects to track
         has_objects_to_track = len(first_frame_objects) > 0
-        
+
+        torch.cuda.empty_cache()
+
         if not has_objects_to_track:
             print("No humans or objects to track, skipping SAM2 propagation")
             video_segments = {}  # Empty dictionary for consistency
+            global_object_id_to_class = {} # Inizializza vuoto per evitare NameError successivi
         else:
             print_step_header("SAM2 video propagation", 5)
-            
+
+            global_object_id_to_class = {} # Inizializzazione dizionario
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
             with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-                # # run propagation throughout the video and collect the results in a dict
-                video_segments = {} # contain per frame human detection information
+                video_segments = {}
+                inference_state = predictor.init_state(video_path=video_dir,
+                                                 offload_video_to_cpu=True,
+                                                 offload_state_to_cpu=True,
+                                                 async_loading_frames=False)
+
+                for obj_idx, obj_data in enumerate(first_frame_objects):
+                    obj_id = 1000 + obj_idx
+                    global_object_id_to_class[obj_id] = obj_data['class_name']
+                    bbox_tensor = torch.tensor(obj_data['bbox'], dtype=torch.float32, device='cpu')
+                    
+                    predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=0,
+                        obj_id=obj_id,
+                        box=bbox_tensor
+                    )
+
+                # PROPAGAZIONE OTTIMIZZATA PER LA RAM
                 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-                    video_segments[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
+                    frame_boxes = {}
+                    for i, out_obj_id in enumerate(out_obj_ids):
+                        mask = (out_mask_logits[i] > 0.0).cpu().numpy()
+                        # Convertiamo SUBITO in bounding box e scartiamo la maschera gigante
+                        boxes = sv.mask_to_xyxy(mask)
+                        if len(boxes) > 0:
+                            frame_boxes[out_obj_id] = list(boxes[0])
+                            
+                    video_segments[out_frame_idx] = frame_boxes
+                
+                # LIBERIAMO LA RAM DI SISTEMA CANCELLANDO LO STATO
+                predictor.reset_state(inference_state)
+                del inference_state
+                import gc
+                gc.collect()
 
         sam2_propagation_time = time.time() - sam2_propagation_start
         timing_stats['sam2_propagation'] += sam2_propagation_time
@@ -1622,86 +1266,70 @@ if __name__ == '__main__':
         # Reformatting and Visualization
         reformatting_start = time.time()
         print_step_header("Reformatting and visualization", 6)
-        motion = {}
-        vis_ls = []
-        
-        # Initialize detected_objects in motion dictionary
-        motion['detected_objects'] = {}
 
-            
-        motion['detected_objects'] = {}
-        
+        # Calcolo FPS con fallback obbligatorio prima dell'inizializzazione del writer
+        original_fps = get_original_video_fps(video_name, video_dir.replace('/Videos_crop_decode/' + video_name, ''))
+        if original_fps is None:
+            frame_count = len(img_ls)
+            original_fps = calculate_fps_from_frames(frame_count, estimated_duration=5.0)
+            print(f"Using calculated FPS: {original_fps:.2f}")
+        else:
+            print(f"Using original video FPS: {original_fps:.2f}")
+
+        writer = imageio.get_writer(out_path, fps=original_fps, codec='libx264')
+
+        motion = {'detected_objects': {}}
+
         for i, obj_data in enumerate(first_frame_objects):
             obj_id = 1000 + i
             obj_key = f"{obj_data['class_name']}_{obj_id}"
-            
+
             first_bbox = obj_data['bbox']
-            first_img = get_cached_image(img_ls[0], video_image_cache)
-            first_h, first_w = first_img.shape[:2]
-            
+
             x1, y1, x2, y2 = first_bbox
             bbox_norm_first = [
-                round(x1/first_w, 4), 
-                round(y1/first_h, 4), 
-                round(x2/first_w, 4), 
-                round(y2/first_h, 4)
+                round(x1/img_width, 4), round(y1/img_height, 4),
+                round(x2/img_width, 4), round(y2/img_height, 4)
             ]
-            
+
             motion['detected_objects'][obj_key] = {
                 'class_name': obj_data['class_name'],
                 'class_id': obj_data['class_id'],
                 'track_id': obj_id,
                 'bbox': [bbox_norm_first]
             }
-            
+
         for i_idx, img_path in tqdm(enumerate(img_ls)):
             img_name = img_path.split('/')[-1]
-            img_cv2 = get_cached_image(img_path, video_image_cache)
-            img_height, img_width, _ = img_cv2.shape
-            
-            
-            bbox_ls = []
-            if i_idx not in video_segments:
 
+            img_cv2 = get_cached_image(img_path, video_image_cache)
+
+            if i_idx not in video_segments:
                 if i_idx > 0:
                     for obj_key in list(motion['detected_objects'].keys()):
                         motion['detected_objects'][obj_key]['bbox'].append(None)
-                        
             else:
                 segments = video_segments[i_idx]
-                
-                detected_objects_count = 0
-                object_ids_above_1000 = [obj_id for obj_id in segments.keys() if obj_id >= 1000]
-                
-                # Debug: Print object tracking info for first few frames
-                if i_idx < 3:
-                    print(f"Frame {i_idx}: Found {len(object_ids_above_1000)} objects with IDs >= 1000: {object_ids_above_1000}")
-                    print(f"Frame {i_idx}: global_object_id_to_class keys: {list(global_object_id_to_class.keys())}")
-                
                 if i_idx > 0:
                     for obj_key in list(motion['detected_objects'].keys()):
                         motion['detected_objects'][obj_key]['bbox'].append(None)
-                
+
                 for obj_id in segments:
                     if obj_id >= 1000:
-                        bbox = list(sv.mask_to_xyxy(segments[obj_id])[0])
+                        bbox = segments[obj_id]
                         bbox_area = get_bbox_area(bbox)
                         if bbox_area > 50:
                             class_name = global_object_id_to_class.get(obj_id)
                             if class_name is None:
-                                if i_idx < 3:
-                                    print(f"Frame {i_idx}: Warning - No class name found for object ID {obj_id}")
                                 continue
-                                
+
                             x1, y1, x2, y2 = bbox
                             bbox_norm = [round(x1/img_width, 4), round(y1/img_height, 4), round(x2/img_width, 4), round(y2/img_height, 4)]
-                            
+
                             obj_key = f"{class_name}_{obj_id}"
                             if obj_key in motion['detected_objects']:
                                 if i_idx != 0:
                                     motion['detected_objects'][obj_key]['bbox'][-1] = bbox_norm
-                                    if i_idx < 3:
-                                        print(f"Frame {i_idx}: Updated existing object {obj_key} bbox: {bbox_norm}")
                             else:
                                 motion['detected_objects'][obj_key] = {
                                     'class_name': class_name,
@@ -1709,136 +1337,113 @@ if __name__ == '__main__':
                                     'track_id': obj_id,
                                     'bbox': [None] * i_idx + [bbox_norm]
                                 }
-                                if i_idx < 3:
-                                    print(f"Frame {i_idx}: Added new object {obj_key} bbox: {bbox_norm}")
-                            
-                            bbox_ls.append((class_name, bbox))
-                            detected_objects_count += 1
-                        else:
-                            if i_idx < 3:
-                                print(f"Frame {i_idx}: Object ID {obj_id} filtered out due to small area: {bbox_area}")
-                
-                if i_idx < 3:
-                    print(f"Frame {i_idx}: Total detected objects: {detected_objects_count}")
-                    print(f"Frame {i_idx}: motion['detected_objects'] keys: {list(motion['detected_objects'].keys())}")
-                
 
-                    
-                        
-                        
-            # draw
             annotated_frame = img_cv2.copy()
-            
             drawing_objects = []
-            
-            
+
             for obj_key, obj_data in motion['detected_objects'].items():
                 current_bbox_norm = obj_data['bbox'][i_idx] if i_idx < len(obj_data['bbox']) else None
-                
+
                 if current_bbox_norm is not None:
                     x1_norm, y1_norm, x2_norm, y2_norm = current_bbox_norm
                     x1 = x1_norm * img_width
                     y1 = y1_norm * img_height
                     x2 = x2_norm * img_width
                     y2 = y2_norm * img_height
-                    
+
                     bbox_abs = [x1, y1, x2, y2]
                     class_name = obj_data['class_name']
-                    
                     drawing_objects.append((class_name, bbox_abs))
-                    
 
-            
-
-            
             for (name, bbox) in drawing_objects:
                 if len(bbox) != 4:
                     continue
-                    
                 x1, y1, x2, y2 = bbox
-                
                 if x1 >= x2 or y1 >= y2 or x1 < 0 or y1 < 0 or x2 > img_width or y2 > img_height:
                     continue
-                
+
                 class_id = OBJECTS_CLASS_ID.get(name, 999)
-                
                 detections = sv.Detections(
-                    xyxy=np.array(bbox)[None, :], 
+                    xyxy=np.array(bbox)[None, :],
                     class_id = np.array([class_id]),
                 )
-                
+
                 box_annotator = sv.BoxAnnotator(color=ColorPalette.from_hex(HEX_COLOR_PALETTE))
-                annotated_frame = box_annotator.annotate(
-                    scene=annotated_frame,
-                    detections=detections)
+                annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
                 label_annotator = sv.LabelAnnotator(color=ColorPalette.from_hex(HEX_COLOR_PALETTE), smart_position=True)
                 annotated_frame = label_annotator.annotate(annotated_frame, detections=detections, labels=[name])
-            
-            vis_ls.append(annotated_frame)
-            save_path = os.path.join(out_dir, img_name)
-            cv2.imwrite(save_path, annotated_frame)
-        
+
+            # Scrivi lo streaming dei dati direttamente su disco per preservare la RAM di sistema
+            writer.append_data(annotated_frame[:, :, ::-1])
+            cv2.imwrite(os.path.join(out_dir, img_name), annotated_frame)
+
+            del annotated_frame
+            del img_cv2
+
+        writer.close()
         reformatting_time = time.time() - reformatting_start
         timing_stats['reformatting_visualization'] += reformatting_time
-        
-        # Save results
+
+        # Save results (Step 7)
         saving_start = time.time()
         print_step_header("Saving results", 7)
-        
-        # Calculate dynamic FPS based on original video
-        original_fps = get_original_video_fps(video_name, video_dir.replace('/Videos_crop_decode/' + video_name, ''))
-        if original_fps is None:
-            # Fallback: calculate FPS from frame count
-            frame_count = len(img_ls)
-            original_fps = calculate_fps_from_frames(frame_count, estimated_duration=5.0)
-            print(f"Using calculated FPS: {original_fps:.2f} (based on {frame_count} frames)")
-        else:
-            print(f"Using original video FPS: {original_fps:.2f}")
-        
-        writer = imageio.get_writer(out_path, fps=original_fps, codec='libx264')
-        for file in vis_ls:
-            writer.append_data(file[:, :, ::-1])
-        writer.close()
-        
+
         with open(pkl_path, 'w') as f:
             json.dump(motion, f, indent=4, cls=NpEncoder)
-        
+
         saving_time = time.time() - saving_start
         timing_stats['saving_results'] += saving_time
-        
         # Update timing stats
         video_total_time = time.time() - video_start_time
         timing_stats['total_video_processing'] += video_total_time
-        
+
         if accelerator is not None and accelerator.num_processes > 1:
             print(f"GPU {accelerator.process_index}: Video {video_name} completed in {video_total_time:.1f}s", flush=True)
         else:
             print(f"Video {video_name} completed in {video_total_time:.1f}s", flush=True)
-        
+
         # Aggressive memory cleanup for Qwen-72B multi-GPU compatibility
         if 'video_image_cache' in locals():
+            video_image_cache.clear()
             del video_image_cache
+            
         if 'motion' in locals():
+            motion.clear()
             del motion
-        if 'vis_ls' in locals():
-            del vis_ls
+            
         if 'video_segments' in locals():
+            video_segments.clear()
             del video_segments
+            
         if 'inference_state' in locals():
+            try:
+                predictor.reset_state(inference_state)
+            except:
+                pass
             del inference_state
-        
-        # Force garbage collection and GPU memory cleanup after each video
+            
+        if 'first_img' in locals():
+            del first_img
+
         import gc
         gc.collect()
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-    
+
+        import ctypes
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+
+
     # Final summary
     total_script_time = time.time() - script_start_time
     total_videos = len(videos_to_process)
     processed_videos = total_videos - len(skipped_videos)
-    
+
     if accelerator is not None and accelerator.num_processes > 1:
         print(f'\nGPU {accelerator.process_index} FINAL SUMMARY:')
         print(f'   • Time: {total_script_time/60:.1f}m, Processed: {processed_videos}/{total_videos}')
@@ -1847,7 +1452,7 @@ if __name__ == '__main__':
             print(f'   • Avg time: {avg_time:.1f}s')
         if skipped_videos:
             print(f'   • Skipped: {len(skipped_videos)} videos')
-        
+
         # Wait for all processes to complete and show total stats on main process
         if accelerator.process_index == 0:
             print(f'\nALL GPU PROCESSING COMPLETED!')
@@ -1860,4 +1465,3 @@ if __name__ == '__main__':
             print(f'   • Avg time: {avg_time:.1f}s')
         if skipped_videos:
             print(f'   • Skipped: {len(skipped_videos)} videos')
-                
