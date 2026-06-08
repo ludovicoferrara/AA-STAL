@@ -95,26 +95,14 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
             scenes_sec = [(s[0].seconds, s[1].seconds) for s in raw_scenes]
             print(f"Video {video_name}: trovate {len(scenes_sec)} scene.")
 
-        # 3. Filtraggio temporale ed estrazione per ogni scena identificata
+        # 3. Estrazione per ogni scena identificata
         valid_scenes = 0
         for i, (start_sec, end_sec) in enumerate(scenes_sec):
             duration = end_sec - start_sec
             
-            # Regola 1: Scarta se minore di 3 secondi
-            if duration < 3.0:
-                continue
-                
-            # Regola 2: Conserva integralmente se tra 3 e 10 secondi
-            elif duration <= 10.0:
-                final_start = start_sec
-                final_duration = duration
-                
-            # Regola 3: Estrai i 6 secondi centrali se maggiore di 10 secondi
-            else:
-                center_time = start_sec + (duration / 2.0)
-                final_start = center_time - 3.0
-                final_duration = 6.0
-                
+            final_start = start_sec
+            final_duration = duration
+                    
             valid_scenes += 1
             output_name = f"{base_name}_scene{i+1}.mp4"
             output_path = os.path.join(output_dir, output_name)
