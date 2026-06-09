@@ -97,19 +97,31 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
 
         # 3. Estrazione per ogni scena identificata
         valid_scenes = 0
+        split_scenes = []
         for i, (start_sec, end_sec) in enumerate(scenes_sec):
             duration = end_sec - start_sec
-            
-            final_start = start_sec
-            final_duration = duration
-                    
+            if duration > 10.0:
+                # Se la scena supera i 10 secondi, prendiamo una prima clip da 10 secondi
+                # e lasciamo la parte rimanente come unico segmento.
+                split_scenes.append((start_sec, start_sec + 10.0, i + 1, 1))
+                split_scenes.append((start_sec + 10.0, end_sec, i + 1, 2))
+                print(f"Video {video_name}: scena {i+1} di {duration:.2f}s divisa in 10s + {end_sec - (start_sec + 10.0):.2f}s")
+            else:
+                split_scenes.append((start_sec, end_sec, i + 1, None))
+        
+        for start_sec, end_sec, scene_idx, part_idx in split_scenes:
+            duration = end_sec - start_sec
+            if duration <= 0:
+                continue
             valid_scenes += 1
-            output_name = f"{base_name}_scene{i+1}.mp4"
+            if part_idx is None:
+                output_name = f"{base_name}_scene{scene_idx}.mp4"
+            else:
+                output_name = f"{base_name}_scene{scene_idx}_part{part_idx}.mp4"
             output_path = os.path.join(output_dir, output_name)
-            
-            crop_video(video_path, output_path, final_start, final_duration)
-            
-        print(f"  -> Salvate {valid_scenes} clip valide su {len(scenes_sec)} totali.")
+            crop_video(video_path, output_path, start_sec, duration)
+        
+        print(f"  -> Salvate {valid_scenes} clip valide su {len(split_scenes)} totali.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Crop videos based on scene detection and temporal thresholds')
