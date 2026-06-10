@@ -101,14 +101,23 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
         for i, (start_sec, end_sec) in enumerate(scenes_sec):
             duration = end_sec - start_sec
             if duration > 10.0:
-                # Se la scena supera i 10 secondi, prendiamo una prima clip da 10 secondi
-                # e lasciamo la parte rimanente come unico segmento.
-                split_scenes.append((start_sec, start_sec + 10.0, i + 1, 1))
-                split_scenes.append((start_sec + 10.0, end_sec, i + 1, 2))
-                print(f"Video {video_name}: scena {i+1} di {duration:.2f}s divisa in 10s + {end_sec - (start_sec + 10.0):.2f}s")
+                # Se la scena supera i 10 secondi, tagliamo ripetutamente blocchi da 10s
+                # finché la parte rimanente è < 10s. I blocchi da 10s vengono numerati
+                # come part1, part2, ...; l'eventuale resto (<10s) diventa l'ultima parte.
+                cur_start = start_sec
+                part = 1
+                while end_sec - cur_start >= 10.0:
+                    split_scenes.append((cur_start, cur_start + 10.0, i + 1, part))
+                    cur_start += 10.0
+                    part += 1
+                # aggiungi il resto se esiste (sarà < 10s)
+                if end_sec - cur_start > 0:
+                    split_scenes.append((cur_start, end_sec, i + 1, part))
+                total_parts = part - (0 if end_sec - cur_start > 0 else 1)
+                print(f"Video {video_name}: scena {i+1} di {duration:.2f}s divisa in {total_parts} blocchi da 10s e eventuale resto")
             else:
                 split_scenes.append((start_sec, end_sec, i + 1, None))
-        
+
         for start_sec, end_sec, scene_idx, part_idx in split_scenes:
             duration = end_sec - start_sec
             if duration <= 0:
@@ -120,7 +129,7 @@ def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
                 output_name = f"{base_name}_scene{scene_idx}_part{part_idx}.mp4"
             output_path = os.path.join(output_dir, output_name)
             crop_video(video_path, output_path, start_sec, duration)
-        
+
         print(f"  -> Salvate {valid_scenes} clip valide su {len(split_scenes)} totali.")
 
 if __name__ == "__main__":
