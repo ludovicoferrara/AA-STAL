@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 # ==========================================
 LASOT_BASE_PATH = "/mnt/c/Users/ludov/Projects/creazione-sdrogo-dataset-AA-STAL/LaSot_robot"
 VIDEO_ORIGINAL_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop"
-OD_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/OD Multipla/video_general_obj_det_finished-dino/video_general_obj_det_finished"
+OD_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/OD Multipla/video_general_obj_det_partial-dino"
+
 # ==========================================
 # 2. UTILITY DI ORDINAMENTO E MATEMATICA
 # ==========================================
@@ -52,7 +53,6 @@ def load_lasot_gt(gt_path, occ_path, oov_path):
     with open(gt_path, 'r') as f:
         gt_boxes = [list(map(float, line.strip().split(','))) for line in f]
     
-    # Legge l'intero contenuto, converte le virgole in spazi e divide per estrarre i singoli interi
     with open(occ_path, 'r') as f:
         occlusions = [int(x) for x in f.read().replace(',', ' ').split()]
         
@@ -66,28 +66,29 @@ def load_lasot_gt(gt_path, occ_path, oov_path):
         
     return gt_abs, occlusions, out_of_views
 
-def extract_bboxes_from_json(json_path, num_frames, video_w, video_h):
+def extract_bboxes_from_json(json_path, video_w, video_h):
     """
-    Estrae le bounding box dal JSON strutturato per singola scena.
-    Restituisce un array di lunghezza 'num_frames' contenente una lista di bbox per frame.
+    Estrae le bounding box dal JSON de-normalizzandole.
+    La lunghezza è determinata dinamicamente in base ai dati nel JSON.
     """
     with open(json_path, 'r') as f:
         data = json.load(f)
     
-    # Inizializza array per tutti i frame della scena
-    frames_bboxes = [[] for _ in range(num_frames)]
     detected_objects = data.get("detected_objects", {})
+    num_frames = 0
     
-    # Itera su tutte le entità rilevate (person_1000, robotic arm_1001, ecc.)
-    for obj_key, obj_val in detected_objects.items():
+    # Determina la lunghezza dei frame calcolati in questa specifica parte
+    for obj_val in detected_objects.values():
         bboxes = obj_val.get("bbox", [])
+        num_frames = max(num_frames, len(bboxes))
         
-        # Popola i frame con le bbox de-normalizzate dell'entità corrente
+    frames_bboxes = [[] for _ in range(num_frames)]
+    
+    for obj_val in detected_objects.values():
+        bboxes = obj_val.get("bbox", [])
         for i, bbox in enumerate(bboxes):
-            if i >= num_frames:
-                break # Sicurezza per non superare i frame reali del video
             if bbox is not None:
-                # [xmin, ymin, xmax, ymax] -> coordinate assolute
+                # Coordinate assolute [x1, y1, x2, y2]
                 x1 = bbox[0] * video_w
                 y1 = bbox[1] * video_h
                 x2 = bbox[2] * video_w
@@ -100,26 +101,28 @@ def extract_bboxes_from_json(json_path, num_frames, video_w, video_h):
 # 4. VALUTAZIONE E METRICHE
 # ==========================================
 def evaluate_tracking(gt_boxes, occlusions, out_of_views, frames_preds):
-    """Valuta le predizioni master rispetto alla GT tramite Oracolo (Miglior IoU)."""
+    """Valuta le predizioni saltando i frame per i quali non è stato eseguito l'OD."""
     ious = []
     center_errors = []
     
-    # Per sicurezza ci limitiamo al minimo tra la lunghezza GT e le predizioni ricostruite
     num_eval_frames = min(len(gt_boxes), len(frames_preds))
     
     for i in range(num_eval_frames):
-        gt_box = gt_boxes[i]
-        preds = frames_preds[i] # Lista di bbox rilevate nel frame i-esimo
+        preds = frames_preds[i] 
         
+        # Se 'preds' è None, significa che questo frame appartiene a una scena/parte scartata. 
+        # Ignoriamo del tutto il frame per il calcolo delle metriche.
+        if preds is None:
+            continue
+            
+        gt_box = gt_boxes[i]
         is_visible = (occlusions[i] == 0) and (out_of_views[i] == 0)
         
         if is_visible:
-            if not preds:
-                # Falso Negativo
+            if not preds:  # Lista vuota [] -> Il modello non ha rilevato nulla
                 ious.append(0.0)
                 center_errors.append(float('inf'))
             else:
-                # ORACLE: Cerca il target predetto con l'IoU maggiore
                 best_iou = 0.0
                 best_ce = float('inf')
                 
@@ -133,18 +136,16 @@ def evaluate_tracking(gt_boxes, occlusions, out_of_views, frames_preds):
                 center_errors.append(best_ce)
         else:
             if not preds:
-                # Vero Negativo
                 ious.append(1.0)
                 center_errors.append(0.0)
             else:
-                # Falso Positivo
                 ious.append(0.0)
                 center_errors.append(float('inf'))
                 
     return ious, center_errors
 
 def calculate_metrics(ious, center_errors):
-    """Calcola AUC per il Success Rate e il Precision Rate."""
+    """Calcola AUC e Precision."""
     ious_arr = np.array(ious)
     ce_arr = np.array(center_errors)
     
@@ -154,11 +155,12 @@ def calculate_metrics(ious, center_errors):
     success_rates = [np.mean(ious_arr >= t) for t in iou_thresholds]
     precision_rates = [np.mean(ce_arr <= t) for t in cle_thresholds]
     
+    # Utilizzo della sintassi numpy aggiornata per l'integrazione
     auc_success = np.trapezoid(success_rates, dx=0.05)
     precision_at_20 = precision_rates[20]
     
     print("-" * 30)
-    print("RISULTATI FINALI GLOBALI")
+    print(f"RISULTATI FINALI (Calcolati su {len(ious_arr)} frame validi)")
     print("-" * 30)
     print(f"Success Rate (AUC): {auc_success:.4f}")
     print(f"Precision Rate (CLE < 20px): {precision_at_20:.4f}")
@@ -189,13 +191,11 @@ def run_pipeline():
     all_ious = []
     all_ces = []
     
-    # Estrae tutti i robot presenti nella cartella LaSOT
     robots = [d for d in os.listdir(LASOT_BASE_PATH) if os.path.isdir(os.path.join(LASOT_BASE_PATH, d))]
     
     for robot in robots:
         print(f"Processando robot: {robot}")
         
-        # Caricamento GT
         gt_path = os.path.join(LASOT_BASE_PATH, robot, "groundtruth.txt")
         occ_path = os.path.join(LASOT_BASE_PATH, robot, "full_occlusion.txt")
         oov_path = os.path.join(LASOT_BASE_PATH, robot, "out_of_view.txt")
@@ -206,52 +206,66 @@ def run_pipeline():
             
         gt_boxes, occlusions, out_of_views = load_lasot_gt(gt_path, occ_path, oov_path)
         
-        # Recupera tutte le scene originali associate a questo robot
         scene_pattern = os.path.join(VIDEO_ORIGINAL_PATH, f"{robot}_scene*.mp4")
         scene_videos = glob.glob(scene_pattern)
         scene_videos.sort(key=natural_keys)
         
         if not scene_videos:
-            print(f"  [!] Nessuna scena video originale trovata per {robot}, salto.")
             continue
             
-        # Determina la risoluzione video analizzando la prima scena
         cap = cv2.VideoCapture(scene_videos[0])
         video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         
-        # Costruzione dell'array Master per le predizioni
         master_preds = []
         
         for video_path in scene_videos:
-            # Nome base della scena, es: "robot-1_scene1"
             scene_name = os.path.splitext(os.path.basename(video_path))[0]
             
-            # Calcolo durata esatta in frame tramite cv2
             cap = cv2.VideoCapture(video_path)
-            num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            num_frames_in_scene = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
             
-            # Percorso del JSON corrispondente (seguendo la tua struttura)
-            json_path = os.path.join(OD_RESULTS_PATH, scene_name, f"{scene_name}.json")
+            # Inizializza l'intera scena con 'None' (Marker per 'Ignora Frame')
+            scene_preds = [None] * num_frames_in_scene
             
-            if os.path.exists(json_path):
-                # Estrae e de-normalizza le bbox
-                frames_bboxes = extract_bboxes_from_json(json_path, num_frames, video_w, video_h)
-                master_preds.extend(frames_bboxes)
+            # 1. Cerca il file JSON singolo (per scene < 10s)
+            single_json_path = os.path.join(OD_RESULTS_PATH, scene_name, f"{scene_name}.json")
+            
+            if os.path.exists(single_json_path):
+                frames_bboxes = extract_bboxes_from_json(single_json_path, video_w, video_h)
+                limit = min(len(frames_bboxes), num_frames_in_scene)
+                scene_preds[:limit] = frames_bboxes[:limit]
             else:
-                # Scena scartata dall'OD: aggiunge frame vuoti (equivalente dei null)
-                master_preds.extend([[] for _ in range(num_frames)])
+                # 2. Cerca le sottoparti (per scene > 10s)
+                part_pattern = os.path.join(OD_RESULTS_PATH, f"{scene_name}_part*", f"{scene_name}_part*.json")
+                part_jsons = glob.glob(part_pattern)
                 
-        # Valutazione del video ricostruito contro la GT
+                for p_json in part_jsons:
+                    # Estrae il numero 'Z' dal nome file 'robot-X_sceneY_partZ.json'
+                    base = os.path.splitext(os.path.basename(p_json))[0]
+                    match = re.search(r'_part(\d+)', base)
+                    if match:
+                        z = int(match.group(1))
+                        # Offset calcolato supponendo frame a 30fps tagliati a 10s esatti (300 frame per parte)
+                        offset = (z - 1) * 300 
+                        
+                        frames_bboxes = extract_bboxes_from_json(p_json, video_w, video_h)
+                        limit = min(len(frames_bboxes), num_frames_in_scene - offset)
+                        
+                        if limit > 0:
+                            # Inserisce i risultati esattamente nell'intervallo temporale corretto
+                            scene_preds[offset : offset + limit] = frames_bboxes[:limit]
+                            
+            master_preds.extend(scene_preds)
+                
+        # Valuta la serie allineata
         ious, ces = evaluate_tracking(gt_boxes, occlusions, out_of_views, master_preds)
         
-        # Aggiunta ai risultati globali
         all_ious.extend(ious)
         all_ces.extend(ces)
         
-    # Elaborazione finale delle metriche
     if all_ious:
         calculate_metrics(all_ious, all_ces)
     else:
