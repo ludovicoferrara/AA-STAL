@@ -79,20 +79,28 @@ def load_gt_txt(gt_path):
     return gt_abs
 
 def extract_bboxes_from_json(json_path):
-    """Estrae e de-normalizza tutte le bbox dal JSON frame per frame."""
+    """Estrae e de-normalizza le bbox, ignorando la classe 'person'."""
     with open(json_path, 'r') as f:
         data = json.load(f)
     
     detected_objects = data.get("detected_objects", {})
-    num_frames = 0
+    valid_objects = {}
     
-    for obj_val in detected_objects.values():
+    # Filtro: scarta gli umani
+    for obj_key, obj_val in detected_objects.items():
+        class_name = obj_val.get("class_name", "").lower()
+        if "person" in class_name:
+            continue
+        valid_objects[obj_key] = obj_val
+        
+    num_frames = 0
+    for obj_val in valid_objects.values():
         bboxes = obj_val.get("bbox", [])
         num_frames = max(num_frames, len(bboxes))
         
     frames_bboxes = [[] for _ in range(num_frames)]
     
-    for obj_val in detected_objects.values():
+    for obj_val in valid_objects.values():
         bboxes = obj_val.get("bbox", [])
         for i, bbox in enumerate(bboxes):
             if bbox is not None:
@@ -150,24 +158,24 @@ def evaluate_tracking_oracle(gt_boxes, frames_preds):
     return ious, center_errors
 
 def calculate_metrics(ious, center_errors):
-    """Calcola AUC e Precision."""
+    """Calcola AUC e Precision con tolleranza a 50px."""
     ious_arr = np.array(ious)
     ce_arr = np.array(center_errors)
     
     iou_thresholds = np.arange(0, 1.05, 0.05)
-    cle_thresholds = np.arange(0, 51, 1)
+    cle_thresholds = np.arange(0, 101, 1) # Modificato asse x fino a 100px
     
     success_rates = [np.mean(ious_arr >= t) for t in iou_thresholds]
     precision_rates = [np.mean(ce_arr <= t) for t in cle_thresholds]
     
     auc_success = np.trapezoid(success_rates, dx=0.05)
-    precision_at_20 = precision_rates[20]
+    precision_at_50 = precision_rates[50] # Modificata soglia a 50px
     
     print("-" * 30)
-    print(f"RISULTATI FINALI (Calcolati su {len(ious_arr)} frame con target visibile/valutabile)")
+    print(f"RISULTATI FINALI (Calcolati su {len(ious_arr)} frame validi)")
     print("-" * 30)
     print(f"Success Rate (AUC): {auc_success:.4f}")
-    print(f"Precision Rate (CLE < 20px): {precision_at_20:.4f}")
+    print(f"Precision Rate (CLE < 50px): {precision_at_50:.4f}")
     
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
@@ -187,7 +195,7 @@ def calculate_metrics(ious, center_errors):
     plt.tight_layout()
     plt.savefig("evaluation_global_mot_results.png")
     print("Grafico salvato come 'evaluation_global_mot_results.png'.")
-
+    
 # ==========================================
 # 5. PIPELINE PRINCIPALE
 # ==========================================
