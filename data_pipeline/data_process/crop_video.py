@@ -29,6 +29,7 @@ def crop_video(video_path, output_path, start_time, duration):
         "-ss", str(start_time),
         "-i", video_path,
         "-t", str(duration),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
         "-c:a", "aac", "-b:a", "128k",
         output_path
@@ -52,9 +53,9 @@ def chunk_into_n(lst, n):
 def process_videos(input_dir, output_dir, chunk_idx=None, chunk_num=None):
     os.makedirs(output_dir, exist_ok=True)
     
-    video_files = glob.glob(os.path.join(input_dir, "*.mp4"))
-    video_files.extend(glob.glob(os.path.join(input_dir, "*.avi")))
-    video_files.extend(glob.glob(os.path.join(input_dir, "*.mov")))
+    video_files = glob.glob(os.path.join(input_dir, "**", "*.mp4"), recursive=True)
+    video_files.extend(glob.glob(os.path.join(input_dir, "**", "*.avi"), recursive=True))
+    video_files.extend(glob.glob(os.path.join(input_dir, "**", "*.mov"), recursive=True))
     video_files.sort()
     
     if chunk_idx is not None and chunk_num is not None:
