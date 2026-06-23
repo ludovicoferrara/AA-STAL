@@ -48,23 +48,37 @@ def compute_center_error(box1, box2):
 # ==========================================
 # 3. LETTURA DATI
 # ==========================================
-def load_lasot_gt(gt_path, occ_path, oov_path):
-    """Carica e formatta la groundtruth di LaSOT."""
-    with open(gt_path, 'r') as f:
-        gt_boxes = [list(map(float, line.strip().split(','))) for line in f]
-    
-    with open(occ_path, 'r') as f:
-        occlusions = [int(x) for x in f.read().replace(',', ' ').split()]
-        
-    with open(oov_path, 'r') as f:
-        out_of_views = [int(x) for x in f.read().replace(',', ' ').split()]
+def load_vidor_gt(json_path):
+    """Carica e formatta la groundtruth di VidOR dal JSON."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
 
-    gt_abs = []
-    for box in gt_boxes:
-        x, y, w, h = box
-        gt_abs.append([x, y, x + w, y + h])
-        
-    return gt_abs, occlusions, out_of_views
+    gt_boxes = []
+    if "trajectories" in data:
+        for frame_objs in data.get("trajectories", []):
+            frame_boxes = []
+            for obj in frame_objs:
+                bbox = obj.get("bbox")
+                if isinstance(bbox, dict):
+                    xmin = bbox.get("xmin")
+                    ymin = bbox.get("ymin")
+                    xmax = bbox.get("xmax")
+                    ymax = bbox.get("ymax")
+                    if None not in (xmin, ymin, xmax, ymax):
+                        frame_boxes.append([xmin, ymin, xmax, ymax])
+                elif isinstance(bbox, list) and len(bbox) == 4:
+                    x, y, w, h = bbox
+                    frame_boxes.append([x, y, x + w, y + h])
+            gt_boxes.append(frame_boxes)
+    else:
+        for obj in data.get("objects", []):
+            if "bbox" in obj:
+                x, y, w, h = obj["bbox"]
+                gt_boxes.append([[x, y, x + w, y + h]])
+
+    num_frames = data.get("frame_count", len(gt_boxes))
+
+    return gt_boxes
 
 def extract_bboxes_from_json(json_path, video_w, video_h):
     """
@@ -100,7 +114,7 @@ def extract_bboxes_from_json(json_path, video_w, video_h):
 # ==========================================
 # 4. VALUTAZIONE E METRICHE
 # ==========================================
-def evaluate_tracking(gt_boxes, occlusions, out_of_views, frames_preds):
+def evaluate_tracking(gt_boxes, frames_preds):
     """Valuta le predizioni saltando i frame per i quali non è stato eseguito l'OD."""
     ious = []
     center_errors = []
@@ -118,29 +132,21 @@ def evaluate_tracking(gt_boxes, occlusions, out_of_views, frames_preds):
         gt_box = gt_boxes[i]
         is_visible = (occlusions[i] == 0) and (out_of_views[i] == 0)
         
-        if is_visible:
-            if not preds:  # Lista vuota [] -> Il modello non ha rilevato nulla
-                ious.append(0.0)
-                center_errors.append(float('inf'))
-            else:
-                best_iou = 0.0
-                best_ce = float('inf')
-                
-                for p_box in preds:
-                    iou = compute_iou(gt_box, p_box)
-                    if iou >= best_iou:
-                        best_iou = iou
-                        best_ce = compute_center_error(gt_box, p_box)
-                
-                ious.append(best_iou)
-                center_errors.append(best_ce)
+        if not preds:  # Lista vuota [] -> Il modello non ha rilevato nulla
+            ious.append(0.0)
+            center_errors.append(float('inf'))
         else:
-            if not preds:
-                ious.append(1.0)
-                center_errors.append(0.0)
-            else:
-                ious.append(0.0)
-                center_errors.append(float('inf'))
+            best_iou = 0.0
+            best_ce = float('inf')
+                
+            for p_box in preds:
+                iou = compute_iou(gt_box, p_box)
+                if iou >= best_iou:
+                    best_iou = iou
+                    best_ce = compute_center_error(gt_box, p_box)
+                
+            ious.append(best_iou)
+            center_errors.append(best_ce)
                 
     return ious, center_errors
 
@@ -191,22 +197,17 @@ def run_pipeline():
     all_ious = []
     all_ces = []
     
-    robots = [d for d in os.listdir(LASOT_BASE_PATH) if os.path.isdir(os.path.join(LASOT_BASE_PATH, d))]
+    jsons = glob.glob(os.path.join(VIDOR_BASE_PATH, "**", "*.json"), recursive=True)
+    jsons.sort(key=lambda p: natural_keys(os.path.basename(p)))
     
-    for robot in robots:
-        print(f"Processando robot: {robot}")
-        
-        gt_path = os.path.join(LASOT_BASE_PATH, robot, "groundtruth.txt")
-        occ_path = os.path.join(LASOT_BASE_PATH, robot, "full_occlusion.txt")
-        oov_path = os.path.join(LASOT_BASE_PATH, robot, "out_of_view.txt")
-        
-        if not os.path.exists(gt_path):
-            print(f"  [!] Groundtruth mancante per {robot}, salto.")
-            continue
+    for json_path in jsons:
+        print(f"Processando file JSON: {json_path}")
             
-        gt_boxes, occlusions, out_of_views = load_lasot_gt(gt_path, occ_path, oov_path)
+        gt_boxes = load_vidor_gt(json_path)
         
-        scene_pattern = os.path.join(VIDEO_ORIGINAL_PATH, f"{robot}_scene*.mp4")
+        scene_name = os.path.splitext(os.path.basename(json_path))[0]
+        scene_pattern = os.path.join(VIDEO_ORIGINAL_PATH, f"{scene_name}_scene*.mp4")
+        print(f"{scene_pattern}")
         scene_videos = glob.glob(scene_pattern)
         scene_videos.sort(key=natural_keys)
         
@@ -260,8 +261,7 @@ def run_pipeline():
                             
             master_preds.extend(scene_preds)
                 
-        # Valuta la serie allineata
-        ious, ces = evaluate_tracking(gt_boxes, occlusions, out_of_views, master_preds)
+        ious, ces = evaluate_tracking(gt_boxes, master_preds)
         
         all_ious.extend(ious)
         all_ces.extend(ces)
