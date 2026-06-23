@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # ==========================================
 # 1. CONFIGURAZIONE PERCORSI
 # ==========================================
-LASOT_BASE_PATH = "/mnt/c/Users/ludov/Projects/creazione-sdrogo-dataset-AA-STAL/LaSot_robot"
+LASOT_BASE_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/groundtruth"
 VIDEO_ORIGINAL_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop"
 OD_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/OD Multipla/video_general_obj_det_partial-dino"
 
