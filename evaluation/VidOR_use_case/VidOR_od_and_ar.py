@@ -15,6 +15,16 @@ VIDEO_ORIGINAL_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/
 OD_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/video_general_obj_det_partial-dino"
 AR_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/action_recognition_finished-example"
 
+AZIONI_CONSENTITE = [
+    "lift", "carry", "push", "pull", "pass", "lean_on", "touch", "hit", "play(instrument)", "grab",
+    "release", "press", "use", "throw", "clean", "knock", "squeeze", "cut", "open", "close", "watch",
+    "hold", "speak_to", "ride", "hug", "hold_hand_of", "hit", "bite", "caress", "pat", "wave", "point_to",
+    "chase", "feed", "kiss", "kick", "smell", "wave_hand_to", "lick", "drive", "shout_at", "get_on", "get_off",
+    "shake_hand_with"
+]
+
+VALID_ACTIONS = {norm_act(a) for a in AZIONI_CONSENTITE}
+
 IOU_MATCH_THRESHOLD = 0.3
 
 # ==========================================
@@ -88,46 +98,45 @@ def load_vidor_gt(json_path):
                             "actions": set()
                         }
 
-    # 2. Estrazione Azioni e Relazioni (Gestione dinamica di Dict e List)
+    # 2. Estrazione Azioni (con FILTRO AZIONI_CONSENTITE)
     relations = data.get("relation_instances", [])
     actions = data.get("action_instances", [])
     
     for action_inst in (relations + actions):
-        # Se il file JSON usa i DIZIONARI
         if isinstance(action_inst, dict):
-            # Trova la classe dell'azione cercando le chiavi tipiche di VidOR
             act_class = action_inst.get("predicate") or action_inst.get("action_class") or action_inst.get("category")
-            
-            # Trova l'ID del soggetto
             subj_tid = action_inst.get("subject_tid")
             if subj_tid is None:
                 subj_tid = action_inst.get("tid")
                 
-            # Trova i frame temporali
             start_f = action_inst.get("begin_fid")
             end_f = action_inst.get("end_fid")
             
             if act_class is not None and subj_tid is not None and start_f is not None and end_f is not None:
-                act_class = norm_act(act_class)
+                act_class_norm = norm_act(act_class)
+                # FILTRO: Aggiungi solo se l'azione appartiene alla lista consentita
+                if act_class_norm in VALID_ACTIONS:
+                    for f_idx in range(start_f, end_f):
+                        if f_idx < frame_count and subj_tid in gt_frames[f_idx]:
+                            gt_frames[f_idx][subj_tid]["actions"].add(act_class_norm)
+                            
+        elif isinstance(action_inst, list) and len(action_inst) >= 4:
+            act_class_norm = norm_act(action_inst[0])
+            # FILTRO: Aggiungi solo se l'azione appartiene alla lista consentita
+            if act_class_norm in VALID_ACTIONS:
+                subj_tid = action_inst[1]
+                
+                if len(action_inst) == 5:
+                    start_f, end_f = action_inst[3], action_inst[4]
+                else:
+                    start_f, end_f = action_inst[-2], action_inst[-1]
+                
                 for f_idx in range(start_f, end_f):
                     if f_idx < frame_count and subj_tid in gt_frames[f_idx]:
-                        gt_frames[f_idx][subj_tid]["actions"].add(act_class)
-                        
-        # Se il file JSON usa le LISTE (vecchio formato)
-        elif isinstance(action_inst, list) and len(action_inst) >= 4:
-            act_class = norm_act(action_inst[0])
-            subj_tid = action_inst[1]
-            
-            if len(action_inst) == 5:
-                start_f, end_f = action_inst[3], action_inst[4]
-            else:
-                start_f, end_f = action_inst[-2], action_inst[-1]
-            
-            for f_idx in range(start_f, end_f):
-                if f_idx < frame_count and subj_tid in gt_frames[f_idx]:
-                    gt_frames[f_idx][subj_tid]["actions"].add(act_class)
+                        gt_frames[f_idx][subj_tid]["actions"].add(act_class_norm)
 
     return gt_frames
+
 
 def load_pred_actions(action_json_path):
     frame_actions = {}
