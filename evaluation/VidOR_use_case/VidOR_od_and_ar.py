@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 # AGGIORNATO CON IL NUOVO PERCORSO LINUX
 GT_BASE_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/groundtruth/VidOR"
 VIDEO_ORIGINAL_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop"
-OD_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/video_general_obj_det_partial-dino"
-AR_RESULTS_PATH = "/mnt/c/Users/ludov/UNIVERSITA/SECONDO ANNO/TESI/Risultati/action_recognition_finished-example"
+OD_RESULTS_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/video_general_obj_det_partial-owl"
+AR_RESULTS_PATH = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/action_recognition_finished-example"
 
 AZIONI_CONSENTITE = [
     "lift", "carry", "push", "pull", "pass", "lean_on", "touch", "hit", "play(instrument)", "grab",
@@ -23,7 +23,6 @@ AZIONI_CONSENTITE = [
     "shake_hand_with"
 ]
 
-VALID_ACTIONS = {norm_act(a) for a in AZIONI_CONSENTITE}
 
 IOU_MATCH_THRESHOLD = 0.3
 
@@ -39,6 +38,8 @@ def natural_keys(text):
 def norm_act(act_string):
     """Normalizza le label per evitare mismatch testuali (es. 'lean_on' -> 'lean on')."""
     return str(act_string).lower().replace('_', ' ').strip()
+
+VALID_ACTIONS = {norm_act(a) for a in AZIONI_CONSENTITE}
 
 def compute_iou(box1, box2):
     x_left = max(box1[0], box2[0])
@@ -138,24 +139,80 @@ def load_vidor_gt(json_path):
     return gt_frames
 
 
-def load_pred_actions(action_json_path):
-    frame_actions = {}
-    with open(action_json_path, 'r') as f:
+# ==========================================
+# 3. LETTURA DATI
+# ==========================================
+def load_vidor_gt(json_path):
+    with open(json_path, 'r') as f:
         data = json.load(f)
+
+    frame_count = data.get("frame_count", 0)
+    if frame_count == 0 and "trajectories" in data:
+        frame_count = len(data["trajectories"])
         
-    for time_key, actions in data.items():
-        match = re.search(r'frames_(\d+)_to_(\d+)', time_key)
-        if match:
-            start_f = int(match.group(1))
-            end_f = int(match.group(2))
-            act_set = set([norm_act(a) for a in actions])
-            
-            for i in range(start_f, end_f):
-                if i not in frame_actions:
-                    frame_actions[i] = set()
-                frame_actions[i].update(act_set)
+    gt_frames = [{} for _ in range(frame_count)]
+
+    # 1. Estrazione Bounding Box (NESSUN FILTRO: carica tutti gli oggetti, umani e non)
+    if "trajectories" in data:
+        for f_idx, frame_objs in enumerate(data.get("trajectories", [])):
+            if f_idx >= frame_count:
+                break
+            for obj in frame_objs:
+                tid = obj.get("tid")
+                bbox = obj.get("bbox")
                 
-    return frame_actions
+                if tid is not None:
+                    if isinstance(bbox, dict):
+                        xmin, ymin = bbox.get("xmin"), bbox.get("ymin")
+                        xmax, ymax = bbox.get("xmax"), bbox.get("ymax")
+                        if None not in (xmin, ymin, xmax, ymax):
+                            gt_frames[f_idx][tid] = {
+                                "bbox": [xmin, ymin, xmax, ymax],
+                                "actions": set()
+                            }
+                    elif isinstance(bbox, list) and len(bbox) == 4:
+                        x, y, w, h = bbox
+                        gt_frames[f_idx][tid] = {
+                            "bbox": [x, y, x + w, y + h],
+                            "actions": set()
+                        }
+
+    # 2. Estrazione Azioni (Mantiene il filtro AZIONI_CONSENTITE)
+    relations = data.get("relation_instances", [])
+    actions = data.get("action_instances", [])
+    
+    for action_inst in (relations + actions):
+        if isinstance(action_inst, dict):
+            act_class = action_inst.get("predicate") or action_inst.get("action_class") or action_inst.get("category")
+            subj_tid = action_inst.get("subject_tid")
+            if subj_tid is None:
+                subj_tid = action_inst.get("tid")
+                
+            start_f = action_inst.get("begin_fid")
+            end_f = action_inst.get("end_fid")
+            
+            if act_class is not None and subj_tid is not None and start_f is not None and end_f is not None:
+                act_class_norm = norm_act(act_class)
+                if act_class_norm in VALID_ACTIONS:
+                    for f_idx in range(start_f, end_f):
+                        if f_idx < frame_count and subj_tid in gt_frames[f_idx]:
+                            gt_frames[f_idx][subj_tid]["actions"].add(act_class_norm)
+                            
+        elif isinstance(action_inst, list) and len(action_inst) >= 4:
+            act_class_norm = norm_act(action_inst[0])
+            if act_class_norm in VALID_ACTIONS:
+                subj_tid = action_inst[1]
+                
+                if len(action_inst) == 5:
+                    start_f, end_f = action_inst[3], action_inst[4]
+                else:
+                    start_f, end_f = action_inst[-2], action_inst[-1]
+                
+                for f_idx in range(start_f, end_f):
+                    if f_idx < frame_count and subj_tid in gt_frames[f_idx]:
+                        gt_frames[f_idx][subj_tid]["actions"].add(act_class_norm)
+
+    return gt_frames
 
 def build_scene_predictions(od_json_path, action_jsons, video_w, video_h):
     with open(od_json_path, 'r') as f:
@@ -173,14 +230,19 @@ def build_scene_predictions(od_json_path, action_jsons, video_w, video_h):
     track_actions_map = {}
     for a_json in action_jsons:
         match = re.search(r'(person_\d+)_actions', a_json)
+        # Se il tuo AR processa anche altri oggetti, puoi generalizzare la regex qui. 
+        # Attualmente legge i JSON che contengono "_actions"
+        if not match:
+            # Fallback se il nome file non ha "person_X" ma magari "dog_X_actions"
+            match = re.search(r'([a-zA-Z0-9_]+)_actions', os.path.basename(a_json))
+            
         if match:
             track_id = match.group(1)
             track_actions_map[track_id] = load_pred_actions(a_json)
 
     for obj_key, obj_val in detected_objects.items():
-        if "person" not in obj_val.get("class_name", "").lower():
-            continue
-            
+        # RIMOSSO IL FILTRO "PERSON". Lasciamo passare tutti gli oggetti!
+        
         bboxes = obj_val.get("bbox", [])
         track_id = obj_key 
         
