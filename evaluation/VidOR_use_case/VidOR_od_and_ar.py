@@ -7,9 +7,9 @@ from scenedetect import detect, ContentDetector
 import matplotlib.pyplot as plt
 
 # --- CONFIGURAZIONE PATH ---
-PATH_OD = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/video_general_obj_det_partial-owl"
-PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/action_recognition_finished-example"
-PATH_VIDEOS = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos" # Ricerca ricorsiva abilitata
+PATH_OD = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/video_general_obj_det_partial-dino"
+PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/act_rec_fin"
+PATH_VIDEOS = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos"
 PATH_FRAMES = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop_decode"
 PATH_GT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/groundtruth/VidOR"
 
