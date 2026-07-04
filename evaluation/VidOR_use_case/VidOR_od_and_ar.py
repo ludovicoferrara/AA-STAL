@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 # --- CONFIGURAZIONE PATH ---
 PATH_OD = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/video_general_obj_det_partial-dino"
-PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/act_rec_fin"
+PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/action_recognition_finished"
 PATH_VIDEOS = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos"
 PATH_FRAMES = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop_decode"
 PATH_GT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/groundtruth/VidOR"
@@ -65,8 +65,6 @@ def get_clip_offset(clip_name: str, video_id: str, gt_data: dict) -> int:
     
     if video_id not in SCENE_CACHE:
         video_path = None
-        
-        # Cerca ricorsivamente in tutte le sottocartelle di PATH_VIDEOS
         search_pattern = os.path.join(PATH_VIDEOS, "**", f"{video_id}.*")
         possible_files = glob.glob(search_pattern, recursive=True)
         
@@ -127,7 +125,8 @@ def main():
         "matched_ious": [], 
         "action_tp": 0,
         "action_fp": 0,
-        "action_fn": 0
+        "action_fn": 0,
+        "processed_ar_videos": set() 
     }
     
     for folder in od_folders:
@@ -149,12 +148,14 @@ def main():
             
         detected_objects = od_res.get("detected_objects", {})
         
+        # 1. Assegnazione Track ID dell'Object Detection ai Track ID della Ground Truth
+        od_to_gt_mapping = {}
+        
         for obj_key, obj_data in detected_objects.items():
             if obj_data.get("class_name") != "person":
                 continue
                 
             pred_bboxes = obj_data.get("bbox", [])
-            
             best_gt_tid = None
             best_iou = 0.0
             
@@ -189,34 +190,57 @@ def main():
                     best_gt_tid = gt_tid
             
             if best_gt_tid is not None and best_iou > 0.2:
+                od_to_gt_mapping[obj_key] = best_gt_tid
                 metrics["od_total_iou"] += best_iou
                 metrics["od_matched_tracks"] += 1
                 metrics["matched_ious"].append(best_iou)
-                
-                action_file = os.path.join(PATH_ACTION, f"{clip_name}_{obj_key}_actions.json")
-                
-                if os.path.exists(action_file):
-                    with open(action_file, 'r') as af:
-                        action_res = json.load(af)
+
+        # 2. Aggregazione delle azioni per singola persona della Ground Truth
+        # Struttura: aggregated_actions[gt_tid][(start_f, end_f)] = set(azioni_predette)
+        aggregated_actions = defaultdict(lambda: defaultdict(set))
+        
+        for obj_key, gt_tid in od_to_gt_mapping.items():
+            action_file = os.path.join(PATH_ACTION, f"{clip_name}_{obj_key}_actions.json")
+            
+            if os.path.exists(action_file):
+                metrics["processed_ar_videos"].add(video_id)
+                with open(action_file, 'r') as af:
+                    action_res = json.load(af)
+                    
+                for frame_window, pred_data in action_res.items():
+                    m = re.match(r"frames_(\d+)_to_(\d+)", frame_window)
+                    if not m:
+                        continue
                         
-                    for frame_window, pred_actions in action_res.items():
-                        m = re.match(r"frames_(\d+)_to_(\d+)", frame_window)
-                        if not m:
-                            continue
+                    start_f = int(m.group(1)) + clip_offset
+                    end_f = int(m.group(2)) + clip_offset
+                    
+                    # Parsing della singola predizione dal nuovo formato dictionary
+                    if isinstance(pred_data, dict) and "action" in pred_data:
+                        action_val = pred_data["action"]
+                        if action_val:
+                            aggregated_actions[gt_tid][(start_f, end_f)].add(action_val)
+                    # Supporto legacy per stringhe o liste vecchie (se ve ne sono)
+                    elif isinstance(pred_data, str):
+                        aggregated_actions[gt_tid][(start_f, end_f)].add(pred_data)
+                    elif isinstance(pred_data, list):
+                        aggregated_actions[gt_tid][(start_f, end_f)].update(pred_data)
+
+        # 3. Valutazione finale per persona e per finestra temporale
+        for gt_tid, windows in aggregated_actions.items():
+            for (start_f, end_f), pred_actions_set in windows.items():
+                gt_actions_in_window = set()
+                
+                # Cerca le azioni della GT relative alla stessa persona nella stessa finestra temporale
+                for rel in gt_vid["actions"]:
+                    if rel["subject_tid"] == gt_tid:
+                        if max(start_f, rel["begin_fid"]) < min(end_f, rel["end_fid"]):
+                            gt_actions_in_window.add(rel["predicate"])
                             
-                        start_f = int(m.group(1)) + clip_offset
-                        end_f = int(m.group(2)) + clip_offset
-                        
-                        gt_actions_in_window = set()
-                        for rel in gt_vid["actions"]:
-                            if rel["subject_tid"] == best_gt_tid:
-                                if max(start_f, rel["begin_fid"]) < min(end_f, rel["end_fid"]):
-                                    gt_actions_in_window.add(rel["predicate"])
-                                    
-                        pred_actions_set = set(pred_actions)
-                        metrics["action_tp"] += len(pred_actions_set.intersection(gt_actions_in_window))
-                        metrics["action_fp"] += len(pred_actions_set - gt_actions_in_window)
-                        metrics["action_fn"] += len(gt_actions_in_window - pred_actions_set)
+                # Se più tracce OD sono state assegnate alla persona "gt_tid", pred_actions_set conterrà la loro unione
+                metrics["action_tp"] += len(pred_actions_set.intersection(gt_actions_in_window))
+                metrics["action_fp"] += len(pred_actions_set - gt_actions_in_window)
+                metrics["action_fn"] += len(gt_actions_in_window - pred_actions_set)
 
     print("\n" + "="*30)
     print(" RISULTATI VALIDAZIONE PIPELINE")
@@ -237,6 +261,8 @@ def main():
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     
+    print("-" * 30)
+    print(f"Video originali elaborati in AR: {len(metrics['processed_ar_videos'])}")
     print("-" * 30)
     print(f"Action Labeling Precision: {precision:.4f}")
     print(f"Action Labeling Recall:    {recall:.4f}")
