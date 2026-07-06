@@ -2,13 +2,15 @@ import os
 import json
 import glob
 import re
+import math
+import numpy as np
 from collections import defaultdict
 from scenedetect import detect, ContentDetector
 import matplotlib.pyplot as plt
 
 # --- CONFIGURAZIONE PATH ---
 PATH_OD = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/video_general_obj_det_partial-dino"
-PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/action_recognition_finished"
+PATH_ACTION = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/action_recognition_finished2"
 PATH_VIDEOS = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos"
 PATH_FRAMES = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/Videos_crop_decode"
 PATH_GT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT/groundtruth/VidOR"
@@ -119,10 +121,15 @@ def main():
     gt_data = load_groundtruth()
     od_folders = glob.glob(os.path.join(PATH_OD, "*"))
     
+    # Assunzione fissa dalla tua pipeline
+    OD_PIPELINE_FPS = 30.0 
+    
     metrics = {
         "od_total_iou": 0.0,
         "od_matched_tracks": 0,
         "matched_ious": [], 
+        "all_frame_ious": [],  
+        "all_frame_cles": [],  
         "action_tp": 0,
         "action_fp": 0,
         "action_fn": 0,
@@ -140,8 +147,11 @@ def main():
         if video_id not in gt_data:
             continue
             
-        clip_offset = get_clip_offset(clip_name, video_id, gt_data)
+        clip_offset_gt = get_clip_offset(clip_name, video_id, gt_data)
         gt_vid = gt_data[video_id]
+        
+        # Fattore di scala per convertire i frame OD (30fps) in frame GT (es. 15fps)
+        fps_ratio = gt_vid["fps"] / OD_PIPELINE_FPS
         
         with open(od_file, 'r') as f:
             od_res = json.load(f)
@@ -163,11 +173,14 @@ def main():
                 total_iou = 0.0
                 valid_frames = 0
                 
-                for frame_idx, pred_box in enumerate(pred_bboxes):
+                for frame_idx_od, pred_box in enumerate(pred_bboxes):
                     if not pred_box:
                         continue
 
-                    gt_frame_idx = frame_idx + clip_offset
+                    # Proiezione del frame OD sulla timeline della Ground Truth
+                    gt_frame_idx_relative = int(round(frame_idx_od * fps_ratio))
+                    gt_frame_idx = gt_frame_idx_relative + clip_offset_gt
+                    
                     if gt_frame_idx >= len(gt_vid["trajectories"]):
                         continue
                     
@@ -189,15 +202,48 @@ def main():
                     best_iou = avg_iou
                     best_gt_tid = gt_tid
             
-            if best_gt_tid is not None and best_iou > 0.2:
+            # Soglia per validare l'assegnazione
+            if best_gt_tid is not None and best_iou > 0.5:
                 od_to_gt_mapping[obj_key] = best_gt_tid
                 metrics["od_total_iou"] += best_iou
                 metrics["od_matched_tracks"] += 1
                 metrics["matched_ious"].append(best_iou)
 
-        # 2. Aggregazione delle azioni per singola persona della Ground Truth
-        # Struttura: aggregated_actions[gt_tid][(start_f, end_f)] = set(azioni_predette)
-        aggregated_actions = defaultdict(lambda: defaultdict(set))
+                # Estrazione frame-level per PLOT OD
+                for frame_idx_od, pred_box in enumerate(pred_bboxes):
+                    if not pred_box:
+                        continue
+
+                    gt_frame_idx_relative = int(round(frame_idx_od * fps_ratio))
+                    gt_frame_idx = gt_frame_idx_relative + clip_offset_gt
+                    
+                    if gt_frame_idx >= len(gt_vid["trajectories"]):
+                        continue
+                    
+                    gt_frame_data = gt_vid["trajectories"][gt_frame_idx]
+                    gt_box_data = next((item["bbox"] for item in gt_frame_data if item["tid"] == best_gt_tid), None)
+                    
+                    if gt_box_data:
+                        p_xmin = pred_box[0] * gt_vid["width"]
+                        p_ymin = pred_box[1] * gt_vid["height"]
+                        p_xmax = pred_box[2] * gt_vid["width"]
+                        p_ymax = pred_box[3] * gt_vid["height"]
+                        
+                        g_box = [gt_box_data["xmin"], gt_box_data["ymin"], gt_box_data["xmax"], gt_box_data["ymax"]]
+                        
+                        iou = calculate_iou([p_xmin, p_ymin, p_xmax, p_ymax], g_box)
+                        metrics["all_frame_ious"].append(iou)
+
+                        cx_p = (p_xmin + p_xmax) / 2.0
+                        cy_p = (p_ymin + p_ymax) / 2.0
+                        cx_g = (g_box[0] + g_box[2]) / 2.0
+                        cy_g = (g_box[1] + g_box[3]) / 2.0
+                        
+                        cle = math.sqrt((cx_p - cx_g)**2 + (cy_p - cy_g)**2)
+                        metrics["all_frame_cles"].append(cle)
+
+        # 2. Aggregazione delle predizioni a livello di singolo FRAME GT
+        frames_data = defaultdict(lambda: defaultdict(lambda: {"pred": set(), "gt": set()}))
         
         for obj_key, gt_tid in od_to_gt_mapping.items():
             action_file = os.path.join(PATH_ACTION, f"{clip_name}_{obj_key}_actions.json")
@@ -212,36 +258,40 @@ def main():
                     if not m:
                         continue
                         
-                    start_f = int(m.group(1)) + clip_offset
-                    end_f = int(m.group(2)) + clip_offset
+                    start_f_od = int(m.group(1))
+                    end_f_od = int(m.group(2))
                     
-                    # Parsing della singola predizione dal nuovo formato dictionary
-                    if isinstance(pred_data, dict) and "action" in pred_data:
-                        action_val = pred_data["action"]
-                        if action_val:
-                            aggregated_actions[gt_tid][(start_f, end_f)].add(action_val)
-                    # Supporto legacy per stringhe o liste vecchie (se ve ne sono)
-                    elif isinstance(pred_data, str):
-                        aggregated_actions[gt_tid][(start_f, end_f)].add(pred_data)
-                    elif isinstance(pred_data, list):
-                        aggregated_actions[gt_tid][(start_f, end_f)].update(pred_data)
+                    # Proiezione dei limiti temporali dell'azione sulla timeline GT
+                    start_f_gt = int(round(start_f_od * fps_ratio)) + clip_offset_gt
+                    end_f_gt = int(round(end_f_od * fps_ratio)) + clip_offset_gt
+                    
+                    for f_idx in range(start_f_gt, end_f_gt):
+                        _ = frames_data[gt_tid][f_idx] 
+                        
+                        if isinstance(pred_data, dict) and "action" in pred_data:
+                            action_val = pred_data["action"]
+                            if action_val and action_val in AZIONI_CONSENTITE:
+                                frames_data[gt_tid][f_idx]["pred"].add(action_val)
 
-        # 3. Valutazione finale per persona e per finestra temporale
-        for gt_tid, windows in aggregated_actions.items():
-            for (start_f, end_f), pred_actions_set in windows.items():
-                gt_actions_in_window = set()
+        # 3. Estrazione della Ground Truth a livello di frame
+        for rel in gt_vid["actions"]:
+            gt_tid = rel["subject_tid"]
+            if gt_tid in frames_data:
+                for f_idx in range(rel["begin_fid"], rel["end_fid"]):
+                    if f_idx in frames_data[gt_tid]:
+                        frames_data[gt_tid][f_idx]["gt"].add(rel["predicate"])
+
+        # 4. Calcolo metriche per singolo frame
+        for gt_tid, frame_dict in frames_data.items():
+            for f_idx, data in frame_dict.items():
+                pred_set = data["pred"]
+                gt_set = data["gt"]
                 
-                # Cerca le azioni della GT relative alla stessa persona nella stessa finestra temporale
-                for rel in gt_vid["actions"]:
-                    if rel["subject_tid"] == gt_tid:
-                        if max(start_f, rel["begin_fid"]) < min(end_f, rel["end_fid"]):
-                            gt_actions_in_window.add(rel["predicate"])
-                            
-                # Se più tracce OD sono state assegnate alla persona "gt_tid", pred_actions_set conterrà la loro unione
-                metrics["action_tp"] += len(pred_actions_set.intersection(gt_actions_in_window))
-                metrics["action_fp"] += len(pred_actions_set - gt_actions_in_window)
-                metrics["action_fn"] += len(gt_actions_in_window - pred_actions_set)
+                metrics["action_tp"] += len(pred_set.intersection(gt_set))
+                metrics["action_fp"] += len(pred_set - gt_set)
+                metrics["action_fn"] += len(gt_set - pred_set)
 
+    # --- STAMPA RISULTATI E PLOT (Invariato rispetto alla precedente versione) ---
     print("\n" + "="*30)
     print(" RISULTATI VALIDAZIONE PIPELINE")
     print("="*30)
@@ -267,28 +317,53 @@ def main():
     print(f"Action Labeling Precision: {precision:.4f}")
     print(f"Action Labeling Recall:    {recall:.4f}")
     print(f"Action Labeling F1-Score:  {f1:.4f}")
-    print("="*30)
-
-    if metrics["matched_ious"]:
-        plt.figure(figsize=(10, 6))
-        plt.hist(metrics["matched_ious"], bins=20, color='#4CAF50', edgecolor='black', range=(0.2, 1.0))
-        plt.title('Mean IoU distribution for matched tracks (OD & Tracking)', fontsize=14, fontweight='bold')
-        plt.xlabel('Mean IoU', fontsize=12)
-        plt.ylabel('Frequency (Number of tracks)', fontsize=12)
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    if metrics["all_frame_ious"]:
+        ious = np.array(metrics["all_frame_ious"])
+        cles = np.array(metrics["all_frame_cles"])
         
-        plt.axvline(mean_iou, color='#F44336', linestyle='dashed', linewidth=2.5, 
-                    label=f'Media: {mean_iou:.3f}')
-        plt.legend(fontsize=12)
+        iou_thresholds = np.linspace(0, 1, 101)  
+        cle_thresholds = np.linspace(0, 50, 51)  
+        
+        success_rates = [np.mean(ious >= t) for t in iou_thresholds]
+        precision_rates = [np.mean(cles <= t) for t in cle_thresholds]
+        
+        mean_success_rate = np.mean(success_rates)
+        precision_at_20 = precision_rates[20] 
+        
+        plt.figure(figsize=(12, 5))
+        
+        plt.subplot(1, 2, 1)
+        plt.plot(iou_thresholds, success_rates, color='blue', linewidth=2, label=f'AUC = {mean_success_rate:.4f}')
+        plt.xlabel('IoU Threshold')
+        plt.ylabel('Success Rate')
+        plt.title('Success Plot (Object Detection)')
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.grid(True)
+        plt.legend()
+        
+        plt.subplot(1, 2, 2)
+        plt.plot(cle_thresholds, precision_rates, color='red', linewidth=2, label=f'Precision (20px) = {precision_at_20:.4f}')
+        plt.xlabel('Location Error Threshold (pixels)')
+        plt.ylabel('Precision Rate')
+        plt.title('Precision Plot (Object Detection)')
+        plt.xlim(0, 50)
+        plt.ylim(0, 1)
+        plt.grid(True)
+        plt.legend()
         
         plt.tight_layout()
-        plot_filename = 'od_tracking_iou_histogram.png'
-        plt.savefig(plot_filename, dpi=300)
-        plt.close()
+        plt.savefig('od_evaluation_plots.png')
+        print("-" * 30)
+        print("I grafici OD sono stati salvati come 'od_evaluation_plots.png'.")
         
-        print(f"\n=> Grafico dell'Object Detection generato e salvato in: {os.path.abspath(plot_filename)}")
+        print("="*30)
+        print(f"Object Detection Mean Success Rate (AUC): {mean_success_rate:.4f}")
+        print(f"Object Detection Precision Rate (20px threshold): {precision_at_20:.4f}")
+        print("="*30)
     else:
-        print("\n=> Dati insufficienti per generare il grafico dell'Object Detection.")
-
+        print("\nNessun frame valido per generare i plot OD.")
+        
 if __name__ == "__main__":
     main()
