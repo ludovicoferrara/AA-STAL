@@ -192,5 +192,7 @@ GroundingDINO/
 
 *.pth
 *.pt
+*.ini
+*.txt
 
 sam2_source/
