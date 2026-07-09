@@ -16,7 +16,7 @@ AR_DIR = os.path.join(DATA_ROOT, "action_recognition_finished")
 GT_DIR = os.path.join(DATA_ROOT, "groundtruth/PennAction")
 DECODE_DIR = os.path.join(DATA_ROOT, "Videos_crop_decode")
 
-OUTPUT_DIR = "/home/ludovico/workspace/AA-STAL/data_pipeline/evaluation/PennAction/action_recognition_validation"
+OUTPUT_DIR = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/action_recognition_validation"
 OUTPUT_CSV_PER_VIDEO = os.path.join(OUTPUT_DIR, "ar_validation_per_video.csv")
 OUTPUT_CSV_PER_CLASS = os.path.join(OUTPUT_DIR, "ar_validation_per_class_prf1.csv")
 
