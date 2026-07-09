@@ -194,5 +194,6 @@ GroundingDINO/
 *.pt
 *.ini
 *.txt
+*.csv
 
 sam2_source/
