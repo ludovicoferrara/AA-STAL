@@ -22,7 +22,7 @@ REQUIRED_GT_COLS = ["frame_id", "action", "x_min", "y_min", "x_max", "y_max"]
 
 # Minimum IoU threshold (across the entire GT) to accept a track as "the right person".
 # Below this threshold, tracking is too unreliable to sensibly associate Action Recognition predictions with the GT.
-MIN_MEAN_IOU_FOR_TRACK_MATCH = 0.1
+MIN_MEAN_IOU_FOR_TRACK_MATCH = 0.3
 
 # Label used for GT frames not covered by any AR window. It is
 # treated as a true negative class in the precision/recall calculation per class,
@@ -31,9 +31,9 @@ MIN_MEAN_IOU_FOR_TRACK_MATCH = 0.1
 NO_PRED_LABEL = "no_prediction"
 
 ACTIONS = [
-    "baseball_pitch", "clean_and_jerk", "pull_up", "strum_guitar",
-    "baseball_swing", "golf_swing", "push_up", "tennis_forehand",
-    "bench_press", "jumping_jacks", "sit_up", "tennis_serve", "bowl",
+    "baseball_pitch", "clean_and_jerk", "pullup", "strum_guitar",
+    "baseball_swing", "golf_swing", "pushup", "tennis_forehand",
+    "bench_press", "jumping_jacks", "situp", "tennis_serve", "bowl",
     "jump_rope", "squat"
 ]
 ACTIONS_SET = set(ACTIONS)
@@ -259,13 +259,16 @@ def compute_per_class_prf1(y_true, y_pred):
     micro_p = tp_tot / (tp_tot + fp_tot) if (tp_tot + fp_tot) > 0 else 0.0
     micro_r = tp_tot / (tp_tot + fn_tot) if (tp_tot + fn_tot) > 0 else 0.0
     micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r) if (micro_p + micro_r) > 0 else 0.0
+    covered_tot = int(sum(np.sum((y_true == c) & (y_pred != NO_PRED_LABEL)) for c in ACTIONS))
+    support_tot = int(valid["support"].sum())
+    micro_coverage = covered_tot / support_tot if support_tot > 0 else np.nan
     micro = {
         "action": "MICRO_AVG",
         "precision": micro_p,
         "recall": micro_r,
         "f1": micro_f1,
         "support": int(valid["support"].sum()),
-        "coverage_ratio": np.nan,
+        "coverage_ratio": micro_coverage,
     }
 
     return pd.concat([df, pd.DataFrame([macro, weighted, micro])], ignore_index=True)
