@@ -11,7 +11,7 @@ DET_TRACK_DIR = os.path.join(DATA_ROOT, "video_general_obj_det_finished")
 GT_DIR = os.path.join(DATA_ROOT, "groundtruth/PennAction")
 DECODE_DIR = os.path.join(DATA_ROOT, "Videos_crop_decode")
 
-OUTPUT_DIR = "/home/ludovico/workspace/AA-STAL/data_pipeline/evaluation/PennAction/od_tracking_validation"
+OUTPUT_DIR = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/od_tracking_validation"
 OUTPUT_CSV_PER_VIDEO = os.path.join(OUTPUT_DIR, "od_tracking_validation_per_video.csv")
 OUTPUT_CSV_PER_ACTION = os.path.join(OUTPUT_DIR, "od_tracking_validation_per_action.csv")
 
@@ -309,6 +309,24 @@ def print_and_save_summary(video_metrics, skipped):
     for reason, count in skipped.items():
         print(f"  {reason}: {count}")
 
+    n_no_prediction = skipped.get("no_prediction", 0)
+    sum_mean_iou_evaluated = sum(m["mean_iou"] for m in video_metrics) if video_metrics else 0.0
+    n_total_considered = len(video_metrics) + n_no_prediction
+    total_mean_iou = (
+        sum_mean_iou_evaluated / n_total_considered if n_total_considered > 0 else 0.0
+    )
+
+    print("\n" + "-" * 60)
+    print(
+        f"TOTAL MEAN IoU (videos with no prediction JSON counted as miss=0): "
+        f"{total_mean_iou:.4f}"
+    )
+    print(
+        f"  based on {len(video_metrics)} evaluated video(s) + {n_no_prediction} "
+        f"video(s) with no prediction file = {n_total_considered} video(s) total"
+    )
+    print("-" * 60)
+
     if not video_metrics:
         print("\nNo evaluated videos (no match between GT and predictions available).")
         return
@@ -334,6 +352,7 @@ def print_and_save_summary(video_metrics, skipped):
     print(f"Mean Center Location Error: {df_metrics['mean_center_location_error_norm'].mean():.4f}")
     print(f"Total ID switches:                          {int(df_metrics['n_id_switches'].sum())}")
     print(f"Average ID switches per video:                  {df_metrics['n_id_switches'].mean():.4f}")
+    print(f"Total mean IoU (incl. no-prediction misses):   {total_mean_iou:.4f}")
     print("=" * 60)
     print(f"\nResults per-video saved in: {OUTPUT_CSV_PER_VIDEO}")
 
