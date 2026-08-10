@@ -189,11 +189,13 @@ gemini_answer_motionbench_*.json
 gemini_answer_motionbench.json
 
 GroundingDINO/
+DATA_ROOT/
 
 *.pth
 *.pt
 *.ini
 *.txt
 *.csv
+*.pbtx
 
 sam2_source/

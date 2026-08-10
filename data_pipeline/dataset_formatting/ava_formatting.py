@@ -3,9 +3,11 @@ import json
 import glob
 import re
 import shutil
+import random
+from collections import Counter, defaultdict
 
 # ==========================================
-# 1. DEFINIZIONE PERCORSI
+# 1. DEFINIZIONE PERCORSI E PARAMETRI
 # ==========================================
 BASE_DIR = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT"
 
@@ -18,25 +20,25 @@ ACTION_DIR = os.path.join(BASE_DIR, "action_recognition_finished")
 AVA_ROOT = os.path.join(BASE_DIR, "AVA_Dataset")
 OUT_ANNOTATIONS = os.path.join(AVA_ROOT, "annotations")
 OUT_FRAMES = os.path.join(AVA_ROOT, "frames")
+OUT_FRAMES_LISTS = os.path.join(AVA_ROOT, "frame_lists")
 
 os.makedirs(OUT_ANNOTATIONS, exist_ok=True)
 os.makedirs(OUT_FRAMES, exist_ok=True)
+os.makedirs(OUT_FRAMES_LISTS, exist_ok=True)
 
-# Variabili globali per la mappatura
+# Mappatura e raggruppamento dati
 action_to_id = {}
 current_action_id = 1
-csv_rows = []
+video_to_rows = defaultdict(list) # Raggruppa le righe CSV per video_id
 
-print("Inizio elaborazione per conversione in formato AVA...")
+print("Inizio elaborazione: Validazione ed estrazione dati...")
 
 # ==========================================
-# 2. ELABORAZIONE FILE
+# 2. ELABORAZIONE FILE CON STRICT MODE
 # ==========================================
-# Cerca tutti i file delle azioni, assumendo un naming simile a "videoID_sceneX_person_1002_actions.json"
 for act_file in glob.glob(os.path.join(ACTION_DIR, "*_actions.json")):
     basename = os.path.basename(act_file)
-    
-    # Estrae il nome del video e il track_id usando una regex
+
     match = re.search(r'(.*)_person_(\d+)_actions\.json', basename)
     if not match:
         continue
@@ -45,107 +47,161 @@ for act_file in glob.glob(os.path.join(ACTION_DIR, "*_actions.json")):
     person_id = match.group(2)
     person_key = f"person_{person_id}"
 
-    # Trova il corrispondente JSON di object detection nella relativa cartella
+    src_frames = os.path.join(FRAMES_DIR, video_id)
+    if not os.path.isdir(src_frames):
+        continue
+
     det_folder = os.path.join(DETECTION_DIR, video_id)
     det_files = glob.glob(os.path.join(det_folder, "*.json"))
     if not det_files:
-        print(f"ATTENZIONE: Nessun file di detection trovato per la cartella: {video_id}")
         continue
     det_file = det_files[0]
 
-    # Carica i due JSON
     with open(act_file, 'r') as f:
         actions_data = json.load(f)
 
     with open(det_file, 'r') as f:
         det_data = json.load(f)
 
-    # Verifica se la persona esiste nei rilevamenti
     objects = det_data.get("detected_objects", {})
     if person_key not in objects:
         continue
 
-    # Estrae l'array delle bounding box frame-by-frame
-    bboxes = objects[person_key].get("bbox", [])
+    person_data = objects[person_key]
+    if person_data.get("class_name") != "person":
+        continue
 
-    # Itera sui blocchi temporali (es. "frames_0_to_30")
-    for frame_range, action_list in actions_data.items():
-        if not action_list:
+    bboxes = person_data.get("bbox", [])
+    max_frames = len(bboxes)
+
+    # Calcolo frequenza azioni
+    action_frequencies = Counter()
+    windows = []
+
+    for frame_range, action_info in actions_data.items():
+        act = action_info.get("action")
+        if not act:
             continue
 
         rmatch = re.search(r'frames_(\d+)_to_(\d+)', frame_range)
         if not rmatch:
             continue
-        
+
         start_f = int(rmatch.group(1))
         end_f = int(rmatch.group(2))
 
-        # Calcola il frame centrale (keyframe) del blocco
-        mid_f = start_f + (end_f - start_f) // 2
-        
-        # Gestione out-of-bounds se il video finisce prima
-        if mid_f >= len(bboxes):
-            mid_f = len(bboxes) - 1
-        if mid_f < 0: 
+        action_frequencies[act] += 1
+        windows.append((start_f, end_f, act))
+
+    person_temp_rows = []
+
+    for frame_idx in range(0, max_frames, 30):
+        bbox = bboxes[frame_idx]
+        if not bbox:
             continue
 
-        # Calcola timestamp in secondi (AVA utilizza spesso stringhe float / sec)
-        timestamp = f"{(mid_f / 30.0):.4f}"
+        candidate_actions = []
+        for start_f, end_f, act in windows:
+            if start_f <= frame_idx <= end_f:
+                candidate_actions.append(act)
 
-        # Estrae le coordinate [x1, y1, x2, y2]
-        bbox = bboxes[mid_f]
+        if not candidate_actions:
+            continue
+
+        best_action = max(candidate_actions, key=lambda a: action_frequencies[a])
+
+        if best_action not in action_to_id:
+            action_to_id[best_action] = current_action_id
+            current_action_id += 1
+
+        act_id = action_to_id[best_action]
         x1, y1, x2, y2 = [format(coord, '.4f') for coord in bbox]
+        timestamp = str(frame_idx // 30)
 
-        # Isola al massimo le prime due label per mantenere compatibilità con la tua regola
-        selected_actions = action_list[:2]
-        
-        for act in selected_actions:
-            # Aggiorna il dizionario azioni dinamicamente
-            if act not in action_to_id:
-                action_to_id[act] = current_action_id
-                current_action_id += 1
-            
-            act_id = action_to_id[act]
+        row = f"{video_id},{timestamp},{x1},{y1},{x2},{y2},{act_id},{person_id}"
+        person_temp_rows.append(row)
 
-            # Creazione riga (senza header, come richiesto da AVA/YOWO)
-            # Struttura: video_id, timestamp, x1, y1, x2, y2, action_id, person_id
-            row = f"{video_id},{timestamp},{x1},{y1},{x2},{y2},{act_id},{person_id}"
-            csv_rows.append(row)
-
-    # ==========================================
-    # 3. CREAZIONE ALBERO DELLE DIRECTORY (FRAMES)
-    # ==========================================
-    src_frames = os.path.join(FRAMES_DIR, video_id)
-    dst_frames = os.path.join(OUT_FRAMES, video_id)
-    
-    if os.path.exists(src_frames) and not os.path.exists(dst_frames):
-        try:
-            # Usa i collegamenti simbolici per risparmiare spazio su disco
-            os.symlink(src_frames, dst_frames)
-        except OSError:
-            # Fallback alla copia fisica se i symlink falliscono
-            print(f"Symlink fallito per {video_id}. Avvio copia fisica dei frame...")
-            shutil.copytree(src_frames, dst_frames)
+    if person_temp_rows:
+        # Bufferizza le righe associandole al video
+        video_to_rows[video_id].extend(person_temp_rows)
 
 # ==========================================
-# 4. SALVATAGGIO DEI FILE DI ANNOTAZIONE
+# 3. SPLIT STRATIFICATO (SHUFFLING)
 # ==========================================
+valid_videos = list(video_to_rows.keys())
 
-# Scrive il CSV principale
-csv_path = os.path.join(OUT_ANNOTATIONS, "ava_train_v2.2.csv")
-with open(csv_path, 'w') as f:
-    f.write("\n".join(csv_rows) + "\n")
-print(f"Scritto dataset CSV: {csv_path} (Totale righe: {len(csv_rows)})")
+# Shuffle randomico per disperdere i video ordinati per classe d'azione
+random.seed(42) # Fissiamo il seed per riproducibilità
+random.shuffle(valid_videos)
 
-# Scrive il file Protobuf (.pbtxt)
+num_videos = len(valid_videos)
+train_split = int(num_videos * 0.8) # 80%
+val_split = int(num_videos * 0.9)   # 10%
+
+splits = {
+    "train": valid_videos[:train_split],
+    "val": valid_videos[train_split:val_split],
+    "test": valid_videos[val_split:]
+}
+
+print(f"Video validi totali: {num_videos}")
+print(f"Suddivisione: Train={len(splits['train'])}, Val={len(splits['val'])}, Test={len(splits['test'])}")
+
+# Funzione ausiliaria per estrarre l'intero dal nome del frame (Natural Sorting)
+def extract_frame_number(filename):
+    numbers = re.findall(r'\d+', filename)
+    return int(numbers[0]) if numbers else 0
+
+# ==========================================
+# 4. SALVATAGGIO DATI (ANNOTATIONS & FRAMES LISTS)
+# ==========================================
+for split_name, split_vids in splits.items():
+    if not split_vids:
+        continue
+
+    # 1. Scrittura Annotations (CSV bounding box e classi delimitati da VIRGOLA)
+    split_annotations = []
+    for vid in split_vids:
+        split_annotations.extend(video_to_rows[vid])
+
+    csv_path = os.path.join(OUT_ANNOTATIONS, f"ava_{split_name}_v2.2.csv")
+    with open(csv_path, 'w') as f:
+        f.write("\n".join(split_annotations) + "\n")
+
+    # 2. Scrittura Frames Lists (File delimitati da SPAZIO)
+    list_path = os.path.join(OUT_FRAMES_LISTS, f"{split_name}.csv")
+    with open(list_path, 'w') as f_list:
+
+        for vid in split_vids:
+            # Creazione collegamento / copia per i frame
+            src_frames = os.path.join(FRAMES_DIR, vid)
+            dst_frames = os.path.join(OUT_FRAMES, vid)
+
+            if os.path.exists(src_frames) and not os.path.exists(dst_frames):
+                try:
+                    os.symlink(src_frames, dst_frames)
+                except OSError:
+                    shutil.copytree(src_frames, dst_frames)
+
+            # Lettura e ordinamento fisico dei frame
+            frame_files = [img for img in os.listdir(src_frames) if img.lower().endswith(('.jpg', '.jpeg', '.png'))]
+            frame_files.sort(key=extract_frame_number)
+
+            # Scrittura riga per riga con delimitatore SPAZIO
+            for i, frame_name in enumerate(frame_files, 1):
+                path = f"{vid}/{frame_name}"
+                dummy_label = "0"
+                row = f"{vid} {vid} {i} {path} {dummy_label}\n"
+                f_list.write(row)
+
+# Salvataggio vocabolario azioni (Protobuf)
 pbtxt_path = os.path.join(OUT_ANNOTATIONS, "ava_action_list_v2.2.pbtxt")
 with open(pbtxt_path, 'w') as f:
     for act_name, act_id in sorted(action_to_id.items(), key=lambda x: x[1]):
         f.write("label {\n")
         f.write(f'  name: "{act_name}"\n')
         f.write(f'  label_id: {act_id}\n')
-        # label_type 2 indica generalmente l'interazione con oggetti/azioni fisiche in AVA
-        f.write('  label_type: 2\n') 
+        f.write('  label_type: 2\n')
         f.write("}\n")
-print(f"Scritto dizionario azioni Protobuf: {pbtxt_path} (Totale azioni trovate: {len(action_to_id)})")
-print("Processo completato con successo.")
+
+print("Dataset generato e splittato con successo.")
