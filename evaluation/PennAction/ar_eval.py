@@ -467,13 +467,9 @@ def print_and_save_summary(video_results, skipped, all_y_true, all_y_pred):
         n_frames_total = df_valid["n_gt_frames"].clip(lower=1)
 
         print(f"Average coverage (macro, per video):               {df_valid['coverage_ratio'].mean():.4f}")
-        print(f"Frame accuracy on covered frames (macro):        {df_valid['frame_accuracy_covered'].mean():.4f}")
-        print(f"Frame accuracy on all GT frames (macro):      {df_valid['frame_accuracy_all'].mean():.4f}")
-
-        micro_acc_all = float((df_valid["frame_accuracy_all"] * n_frames_total).sum() / n_frames_total.sum())
-        print(f"Frame accuracy on all GT frames (micro):      {micro_acc_all:.4f}")
-
-        print(f"Video-level accuracy (top-1):  {df_valid['video_match'].mean():.4f}")
+        print(f"Frame accuracy on covered frames (micro):        {df_valid['frame_accuracy_covered'].mean():.4f}")
+        print(f"Frame accuracy on all GT frames (micro):      {df_valid['frame_accuracy_all'].mean():.4f}")
+        print(f"Video-level accuracy (macro, top-1):  {df_valid['video_match'].mean():.4f}")
 
     print("=" * 60)
     print(f"\nResults per-video saved in: {OUTPUT_CSV_PER_VIDEO}")
