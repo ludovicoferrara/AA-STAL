@@ -10,19 +10,13 @@ def parse_training_logs(file_path):
         print(f"[ERROR] Log file '{file_path}' not found.")
         return None
 
-    # Dictionary to store the data: { subset_percentage: { epoch: mAP_value, ... }, ... }
-    # Example: { 6.25: { 1: 0.082, 2: 0.159, ... }, 12.5: { ... } }
     training_data = {}
     
     current_subset = None
     current_map = None
 
-    # Regex patterns based on your specific YOWOv2 output format
-    # Matches: save_folder='/.../checkpoints_6_25/' -> Extracts '6_25'
     subset_pattern = re.compile(r"checkpoints_(\d+(?:_\d+)?)/?'")
-    # Matches: mAP: 0.08269542123732236
     map_pattern = re.compile(r"mAP:\s+([0-9.]+)")
-    # Matches: Saving state, epoch: 1
     epoch_pattern = re.compile(r"Saving state,\s+epoch:\s+(\d+)")
 
     print(f"[INFO] Parsing log file: {file_path}")
@@ -30,10 +24,8 @@ def parse_training_logs(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         for line_num, line in enumerate(file, 1):
             
-            # 1. Detect dataset subset percentage
             subset_match = subset_pattern.search(line)
             if subset_match:
-                # Convert '6_25' to 6.25, '25' to 25.0
                 subset_str = subset_match.group(1).replace('_', '.')
                 current_subset = float(subset_str)
                 
@@ -42,22 +34,16 @@ def parse_training_logs(file_path):
                     print(f"[INFO] Found new training run for dataset subset: {current_subset}%")
                 continue
 
-            # 2. Extract mAP evaluation value
             map_match = map_pattern.search(line)
             if map_match:
                 current_map = float(map_match.group(1))
                 continue
 
-            # 3. Extract epoch number and link it to the previously found mAP
-            epoch_match = epoch_pattern.search(line)
             if epoch_match and current_map is not None and current_subset is not None:
                 epoch = int(epoch_match.group(1))
                 
-                # Assign mAP to the specific epoch. 
-                # If a run crashed and restarted (like your 100% run), it simply overwrites the old keys.
                 training_data[current_subset][epoch] = current_map
                 
-                # Reset current_map to avoid double-logging
                 current_map = None
 
     print("[INFO] Parsing completed successfully.\n")
@@ -70,11 +56,10 @@ def plot_map_vs_epochs(data):
     """
     plt.figure(figsize=(10, 6))
 
-    # Sort subsets to ensure the legend is ordered (6.25 -> 100)
+    # Sort subsets to ensure the legend is ordered
     for subset in sorted(data.keys()):
         epochs_dict = data[subset]
         
-        # Sort epochs just in case they were parsed out of order
         epochs = sorted(epochs_dict.keys())
         map_values = [epochs_dict[e] for e in epochs]
         
@@ -103,7 +88,6 @@ def plot_final_map_vs_dataset(data):
     final_maps = []
 
     for p in percentages:
-        # Get the maximum epoch number for the current subset (the final epoch)
         final_epoch = max(data[p].keys())
         final_map = data[p][final_epoch]
         final_maps.append(final_map)
@@ -116,7 +100,6 @@ def plot_final_map_vs_dataset(data):
     plt.xlabel("Dataset Subset (%)", fontsize=12)
     plt.ylabel("Final Epoch mAP @ 0.5 IOU", fontsize=12)
     
-    # Ensure X-axis ticks exactly match the dataset percentages
     plt.xticks(percentages)
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.tight_layout()
@@ -127,14 +110,11 @@ def plot_final_map_vs_dataset(data):
     plt.show()
 
 if __name__ == "__main__":
-    # Define the input log file
     log_file = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/whole_training_log.txt"
     
-    # Parse the data
     parsed_data = parse_training_logs(log_file)
     
     if parsed_data:
-        # Generate the two requested plots
         plot_map_vs_epochs(parsed_data)
         plot_final_map_vs_dataset(parsed_data)
         print("[INFO] All tasks finished.")

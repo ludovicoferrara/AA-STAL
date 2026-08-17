@@ -4,9 +4,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-# =============================================================================
-# CONFIGURAZIONE PERCORSI
-# =============================================================================
 DATA_ROOT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT"
 GT_DIR = os.path.join(DATA_ROOT, "groundtruth/PennAction")
 
@@ -19,8 +16,6 @@ def main():
 
     print(f"Analisi di {len(gt_files)} video in corso...")
 
-    # Dizionario per accumulare le lunghezze dei video per ogni azione
-    # Formato: {'azione': [len1, len2, ...]}
     action_lengths = {}
 
     for gt_path in gt_files:
@@ -29,11 +24,8 @@ def main():
             if df.empty:
                 continue
             
-            # Poiché i video di PennAction contengono una singola macro-azione,
-            # estraiamo la label dalla prima riga
             action = df['action'].iloc[0].strip().lower()
             
-            # Il numero di frame corrisponde al numero di righe nel CSV
             num_frames = len(df)
             
             if action not in action_lengths:
@@ -44,7 +36,6 @@ def main():
         except Exception as e:
             print(f"Errore nella lettura di {gt_path}: {e}")
 
-    # Calcolo delle medie
     actions = []
     avg_frames = []
     
@@ -57,10 +48,7 @@ def main():
         print(f"{action.ljust(20)}: {avg:.1f} frame medi (su {len(lengths)} video)")
     print("-" * 40)
 
-    # =============================================================================
-    # PLOTTING DEL GRAFICO
-    # =============================================================================
-    # Ordinamento decrescente in base al numero medio di frame per migliorare la leggibilità
+    # PLOTTING
     sorted_indices = np.argsort(avg_frames)
     actions_sorted = [actions[i] for i in sorted_indices]
     avg_frames_sorted = [avg_frames[i] for i in sorted_indices]
@@ -68,7 +56,6 @@ def main():
     plt.figure(figsize=(12, 8))
     bars = plt.barh(actions_sorted, avg_frames_sorted, color='steelblue')
     
-    # Aggiunta del valore esatto su ogni barra
     for bar in bars:
         width = bar.get_width()
         plt.text(width + 0.5, 
@@ -81,7 +68,6 @@ def main():
     plt.ylabel('Action', fontsize=12)
     plt.title('Average Length of Videos per Action (PennAction)', fontsize=14, pad=15)
     
-    # Linea verticale per la media globale
     global_mean = np.mean([l for lengths in action_lengths.values() for l in lengths])
     plt.axvline(global_mean, color='red', linestyle='--', alpha=0.7, label=f'Global Average ({global_mean:.1f})')
     plt.legend()
@@ -92,9 +78,6 @@ def main():
     output_img = "frame_medi_per_azione.png"
     plt.savefig(output_img, dpi=300)
     print(f"\nGrafico salvato con successo in: {os.path.abspath(output_img)}")
-    
-    # Decommentare la riga sottostante per visualizzare il grafico direttamente a schermo
-    # plt.show()
 
 if __name__ == "__main__":
     main()
