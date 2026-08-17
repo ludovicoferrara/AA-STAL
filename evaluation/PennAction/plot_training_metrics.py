@@ -39,6 +39,7 @@ def parse_training_logs(file_path):
                 current_map = float(map_match.group(1))
                 continue
 
+            epoch_match = epoch_pattern.search(line)
             if epoch_match and current_map is not None and current_subset is not None:
                 epoch = int(epoch_match.group(1))
                 
@@ -110,7 +111,7 @@ def plot_final_map_vs_dataset(data):
     plt.show()
 
 if __name__ == "__main__":
-    log_file = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/whole_training_log.txt"
+    log_file = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/whole_training.txt"
     
     parsed_data = parse_training_logs(log_file)
     
