@@ -111,7 +111,7 @@ def plot_final_map_vs_dataset(data):
     plt.show()
 
 if __name__ == "__main__":
-    log_file = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/whole_training.txt"
+    log_file = "/home/ludovico/workspace/AA-STAL/evaluation/PennAction/whole_training - Copia.txt"
     
     parsed_data = parse_training_logs(log_file)
     
