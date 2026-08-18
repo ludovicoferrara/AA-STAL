@@ -67,7 +67,7 @@ def plot_map_vs_epochs(data):
         # Plot the curve
         plt.plot(epochs, map_values, marker='o', linewidth=2, label=f"{subset}% Dataset")
 
-    plt.title("Model Accuracy (mAP@0.5) vs. Training Epochs", fontsize=14, fontweight='bold')
+    # plt.title("Model Accuracy (mAP@0.5) vs. Training Epochs", fontsize=14, fontweight='bold')
     plt.xlabel("Epochs", fontsize=12)
     plt.ylabel("mAP @ 0.5 IOU", fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
@@ -97,7 +97,7 @@ def plot_final_map_vs_dataset(data):
     # Plot the curve
     plt.plot(percentages, final_maps, marker='s', color='darkblue', linestyle='-', linewidth=2, markersize=8)
     
-    plt.title("Final Accuracy (mAP@0.5) vs. Dataset Growth", fontsize=14, fontweight='bold')
+    # plt.title("Final Accuracy (mAP@0.5) vs. Dataset Growth", fontsize=14, fontweight='bold')
     plt.xlabel("Dataset Subset (%)", fontsize=12)
     plt.ylabel("Final Epoch mAP @ 0.5 IOU", fontsize=12)
     
