@@ -200,3 +200,11 @@ DATA_ROOT/
 
 sam2_source/
 visualization/
+checkpoints/
+checkpoints_6_25/
+checkpoints_12_5/
+checkpoints_25/
+checkpoints_50/
+checkpoints_75/
+checkpoints_100/
+checkpoints_100_gt/
