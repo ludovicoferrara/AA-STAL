@@ -271,7 +271,7 @@ def compute_per_class_prf1(y_true, y_pred):
         "coverage_ratio": micro_coverage,
     }
 
-    return pd.concat([df, pd.DataFrame([macro, weighted, micro])], ignore_index=True)
+    return pd.concat([df, pd.DataFrame([macro, micro])], ignore_index=True)
 
 
 # MAIN SCRIPT 
