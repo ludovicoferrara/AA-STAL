@@ -68,6 +68,7 @@ class DefaultPredictor_Lazy:
             self.input_format = mapper.image_format
 
         self.model.eval().cuda()
+        self.model.requires_grad_(False)
         if test_dataset:
             self.metadata = MetadataCatalog.get(test_dataset)
         assert self.input_format in ["RGB", "BGR"], self.input_format
@@ -82,7 +83,7 @@ class DefaultPredictor_Lazy:
                 the output of the model for one image only.
                 See :doc:`/tutorials/models` for details about the format.
         """
-        with torch.no_grad():
+        with torch.inference_mode():
             if self.input_format == "RGB":
                 original_image = original_image[:, :, ::-1]
             height, width = original_image.shape[:2]
