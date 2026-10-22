@@ -7,8 +7,9 @@ This repository contains the code and resources for the master's thesis work "An
 The pipeline consists of the following sequential stages:
 1. **Data Pre-processing**: Raw videos are segmented based on shot changes, and 30 Frames Per Second (FPS) are extracted. Unsuitable or blurry clips are discarded using the VGGT model.
 2. **Object Detection and Tracking**: The pipeline uses Detectron2 to detect human actors and GroundingDINO to detect objects. SAM2 is then utilized to track these detections across temporal windows.
-3. **Action Recognition**: The Qwen3-VL-8B-Instruct model (loaded in 4-bit precision) assigns action labels to the tracked humans based on the visual context of the bounding boxes.
-4. **Output Production**: The processed data is formatted into an AVA-like dataset structure. Additionally, the pipeline supports generating event logs suitable for process mining applications.
+3. **Person–Object Association**: A standalone geometric stage associates tracked objects with people using bounding-box containment, proximity, and temporal consistency. The output preserves frame-level evidence and window-level associations without modifying the detection results.
+4. **Action Recognition**: The Qwen3-VL-8B-Instruct model (loaded in 4-bit precision) assigns action labels to the tracked humans and uses only the objects associated with the target actor.
+5. **Output Production**: The processed data is formatted into an AVA-like dataset structure. Additionally, the pipeline supports generating event logs suitable for process mining applications.
 
 ## Repository Structure
 
@@ -19,6 +20,7 @@ The repository is organized into three main directories:
     *   **`jupiter_notebooks/`**: Contains the execution flow of the pipeline:
         *   `pre_processing.ipynb`: Handles video cropping and frame extraction.
         *   `obj_det_w_dino.ipynb`: Executes human/object detection and SAM2 tracking.
+        *   `person_object_association.ipynb`: Associates tracked objects with people from the detection JSON files; it does not rerun detection or tracking.
         *   `action_labeling.ipynb`: Runs the Qwen3-VL action recognition inference.
         *   `ava_formatting_and_training.ipynb`: Formats the final annotations into the AVA structure and contains the commands to launch the YOWOv2 training and evaluation.
         *   `process_mining_formatting.ipynb`: Adapts the pipeline output into event logs for process mining tasks.
@@ -33,7 +35,19 @@ To replicate the experiment on the ([Penn Action Dataset](https://dreamdragon.gi
 1. Clone this repository into your Google Drive environment.
 2. Create the `DATA_ROOT` directory inside `data_pipeline/` and upload the dataset.
 3. Open the files in `data_pipeline/jupiter_notebooks/` using Google Colab.
-4. Execute the notebooks sequentially following the pipeline architecture (Pre-processing -> Object Detection -> Action Labeling -> Formatting & Training).
+4. Execute the notebooks sequentially following the pipeline architecture (Pre-processing -> Object Detection -> Person–Object Association -> Action Labeling -> Formatting & Training).
+
+The association stage can also be run without Jupyter:
+
+```bash
+python data_pipeline/person_object_association.py \
+  data_pipeline/DATA_ROOT/video_general_obj_det_finished \
+  data_pipeline/DATA_ROOT/person_object_associations
+```
+
+The scoring method and JSON contracts are documented in [`docs/person_object_association_spec.md`](docs/person_object_association_spec.md).
+
+The final cell of `person_object_association.ipynb` generates sampled diagnostic frames under `DATA_ROOT/person_object_association_visualizations/`. People are drawn in red, temporally accepted objects in green, and each accepted association is represented by a yellow line and its frame-level score. The visualization step never modifies the original frames.
 
 ## Reference
 This work is part of a Master's Degree in Computer Science at the University of Camerino (UNICAM) by Ludovico Ferrara.
