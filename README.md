@@ -31,7 +31,7 @@ The repository is organized into three main directories:
 
 The entire workflow has been designed and tested on **Google Colab**, utilizing Google Drive for storage and file management. 
 
-To replicate the experiment on the ([Penn Action Dataset](https://dreamdragon.github.io/PennAction/)):
+To replicate the experiments on the ([Penn Action Dataset](https://dreamdragon.github.io/PennAction/)) or ([TUM Kitchen Dataset](https://ias.uni-bremen.de/ias/research/software/kitchen-activity-data)):
 1. Clone this repository into your Google Drive environment.
 2. Create the `DATA_ROOT` directory inside `data_pipeline/` and upload the dataset.
 3. Open the files in `data_pipeline/jupiter_notebooks/` using Google Colab.
@@ -73,4 +73,15 @@ This work is part of a Master's Degree in Computer Science at the University of 
   pages={2248-2255},
   keywords={Spatiotemporal phenomena;Training;Trajectory;Visualization;Semantics;Cameras;Context;action classification;action detection},
   doi={10.1109/ICCV.2013.280}}
-  ```
+```
+
+```
+@inproceedings{tumdataset,
+  title={The TUM kitchen data set of everyday manipulation activities for motion tracking and action recognition},
+  author={Tenorth, Moritz and Bandouch, Jan and Beetz, Michael},
+  booktitle={2009 IEEE 12th International Conference on Computer Vision Workshops, ICCV Workshops},
+  pages={1089--1096},
+  year={2009},
+  organization={IEEE}
+}
+```
