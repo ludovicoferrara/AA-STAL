@@ -15,6 +15,8 @@ Differences with respect to the PennAction version:
             LoweringAnObject, ReleasingGraspOfSomething, CarryingWhileLocomoting
         L1: OpeningADoor/Drawer -> OpeningAContainer, ClosingADoor/Drawer -> ClosingAContainer
   * Macro / micro averages are reported with and without CarryingWhileLocomoting.
+  * A multi-label confusion matrix (csv + png, one per level) is saved too.
+  * Only the video parts that already have an AR file are evaluated (partial runs are possible).
 
 Naming:  labels.csv, labels_2.csv, ... labels_19.csv  <->  cam0, cam0_2, ... (and cam1, cam2, ...)
          The suffix is read as an index (no suffix = 1). Videos without a label file are skipped.
@@ -38,7 +40,7 @@ from collections import Counter
 
 # PATH CONFIG
 DATA_ROOT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT"
-AR_DIR = os.path.join(DATA_ROOT, "action_recognition_finished")
+AR_DIR = os.path.join(DATA_ROOT, "action_recognition_finished1")
 GT_DIR = os.path.join(DATA_ROOT, "groundtruth/TUMKitchen")
 DECODE_DIR = os.path.join(DATA_ROOT, "Videos_crop_decode")   # folders of extracted frames, one per video
 
@@ -46,6 +48,8 @@ OUTPUT_DIR = "/home/ludovico/workspace/AA-STAL/evaluation/TUMKitchen/action_reco
 OUTPUT_CSV_PER_VIDEO = os.path.join(OUTPUT_DIR, "ar_validation_per_video.csv")
 OUTPUT_CSV_PER_CLASS = os.path.join(OUTPUT_DIR, "ar_validation_per_class_prf1.csv")
 OUTPUT_CSV_COOC = os.path.join(OUTPUT_DIR, "ar_validation_cooccurrence_{level}.csv")
+OUTPUT_CSV_CM = os.path.join(OUTPUT_DIR, "ar_validation_confusion_matrix_{level}.csv")
+OUTPUT_PNG_CM = os.path.join(OUTPUT_DIR, "ar_validation_confusion_matrix_{level}.png")
 
 # FILE NAMES
 GT_FILE_GLOB = "**/*.csv"
@@ -97,13 +101,9 @@ GT_COLUMN_CANDIDATES = {
 # TEMPORAL ALIGNMENT
 PIPELINE_FPS = 30   # frames on which the Action Recognition is run
 GT_FPS = 25         # TUM Kitchen labels / videos
-# Video frame at 25 Hz of a label row = value of the "instance" column (row number if missing) + offset.
-# IMPORTANT: the dataset page says that the first row of the pose files of episode 0-0 is video frame 240
-# (tracking starts at "startframe"), while the JPG sequences start at frame 0. The docs do not say whether the
-# labels start at video frame 0 or at startframe. --inspect compares the video length with the number of label
-# rows; if the labels turn out to start later, set the offset per label index: GT_ROW_OFFSET = {1: 240, ...}
-# DEFAULT_GT_ROW_OFFSET = 0
-# GT_ROW_OFFSET = {}
+# Video frame at 25 Hz of a label row = value of the "instance" column (row number if missing) + startframe
+# (GT_ROW_OFFSET above). The labels cover only [startframe, endframe] of the video: only the GT frames are
+# evaluated, the video frames outside that range have no label and are ignored.
 # Warn if the video length and the end of the GT differ by more than this (wrong offset or wrong pairing).
 ALIGNMENT_WARN_SEC = 2.0
 
@@ -271,24 +271,62 @@ def parse_part_name(name):
     return (m.group(1), int(m.group(2)), int(m.group(3))) if m else None
 
 
-def part_offsets(parts):
-    """parts sorted by (scene, part). Returns (offset of every part in video frames, total frames or None
-    if the last frame folder is missing). Returns (None, None) if an intermediate part is missing."""
-    offsets, pos, known = [], 0, True
-    for i, p in enumerate(parts):
-        offsets.append(pos)
-        n = count_decoded_frames(p)
-        if n is None:
-            if i < len(parts) - 1:
-                return None, None
-            known, n = False, PART_FRAMES
-        pos += n
-    return offsets, (pos if known else None)
+# def part_offsets(parts):
+#     """parts sorted by (scene, part). Returns (offset of every part in video frames, total frames or None
+#     if the last frame folder is missing). Returns (None, None) if an intermediate part is missing."""
+#     offsets, pos, known = [], 0, True
+#     for i, p in enumerate(parts):
+#         offsets.append(pos)
+#         n = count_decoded_frames(p)
+#         if n is None:
+#             if i < len(parts) - 1:
+#                 return None, None
+#             known, n = False, PART_FRAMES
+#         pos += n
+#     return offsets, (pos if known else None)
 
 
-def map_gt_to_pipeline_frames(frame25, n_decoded):
-    """For every 25 Hz GT frame, find the nearest 30 fps pipeline frame and keep the frames
-    that fall within the decoded video length. Returns (pipeline_frame_idx, gt_row_idx)."""
+# def map_gt_to_pipeline_frames(frame25, n_decoded):
+#     """For every 25 Hz GT frame, find the nearest 30 fps pipeline frame and keep the frames
+#     that fall within the decoded video length. Returns (pipeline_frame_idx, gt_row_idx)."""
+#     frame25 = np.asarray(frame25)
+#     rows_all = np.arange(len(frame25))
+#     ok = frame25 >= 0
+#     frame25, rows_all = frame25[ok], rows_all[ok]
+#     if len(frame25) == 0:
+#         return np.array([], dtype=int), np.array([], dtype=int)
+
+#     pipe_idx = np.floor(frame25 * PIPELINE_FPS / GT_FPS + 0.5).astype(np.int64)
+
+#     if n_decoded is not None:
+#         valid_mask = (pipe_idx >= 0) & (pipe_idx < n_decoded)
+#     else:
+#         valid_mask = pipe_idx >= 0
+
+#     return pipe_idx[valid_mask], rows_all[valid_mask]
+
+def total_decoded_frames(parts):
+    """Frames of the whole video (sum of its parts), or None if a frame folder is missing."""
+    counts = [count_decoded_frames(p) for p in parts]
+    return None if any(c is None for c in counts) else sum(counts)
+
+
+def part_interval(part):
+    """(offset, (start, end)) of a part on the video timeline, in 30 fps frames. The offset is (Z-1) * 300:
+    it does not depend on the other parts being present, so a part can be evaluated on its own."""
+    _, scene, z = parse_part_name(part)
+    if scene != 1:
+        print(f"[{part}] WARNING: scene {scene} -> offsets assume a single scene per video.")
+    offset = (z - 1) * PART_FRAMES
+    n = count_decoded_frames(part)
+    if n is None:
+        n = PART_FRAMES  # frame folder missing: assume the nominal 300 frames
+    return offset, (offset, offset + n)
+
+
+def map_gt_to_pipeline_frames(frame25, intervals):
+    """Mappa i frame GT a 25Hz su quelli a 30 fps, mantenendo SOLO quelli 
+    che cadono negli intervalli temporali delle 'part' presenti."""
     frame25 = np.asarray(frame25)
     rows_all = np.arange(len(frame25))
     ok = frame25 >= 0
@@ -298,12 +336,68 @@ def map_gt_to_pipeline_frames(frame25, n_decoded):
 
     pipe_idx = np.floor(frame25 * PIPELINE_FPS / GT_FPS + 0.5).astype(np.int64)
 
-    if n_decoded is not None:
-        valid_mask = (pipe_idx >= 0) & (pipe_idx < n_decoded)
-    else:
-        valid_mask = pipe_idx >= 0
+    # Maschera: validi solo i frame pipeline che cadono dentro gli intervalli estratti
+    valid_mask = np.zeros(len(pipe_idx), dtype=bool)
+    for start, end in intervals:
+        valid_mask |= ((pipe_idx >= start) & (pipe_idx < end))
 
     return pipe_idx[valid_mask], rows_all[valid_mask]
+
+
+def evaluate_video(meta, parts, gt):
+    """Returns (result_dict, (Y_true_L0, Y_pred_L0, covered) or None).
+    Only the parts that already have an AR file are evaluated: unprocessed parts are ignored (their frames
+    are neither evaluated nor counted as missed), so the evaluation can run while inference is ongoing."""
+    windows, track_ids, intervals = [], [], []
+    for part in parts:
+        ar_path, track_id, part_windows = select_ar_track(part)
+        if ar_path is None:
+            continue
+        offset, interval = part_interval(part)
+        intervals.append(interval)
+        track_ids.append(track_id)
+        shift = offset if AR_FRAMES_RELATIVE_TO_PART else 0
+        windows += [(s + shift, e + shift, lab) for s, e, lab in part_windows]
+
+    if not track_ids:
+        return empty_video_result(meta, "no_ar_file"), None
+    meta = {**meta, "n_parts_evaluated": len(track_ids)}
+
+    pipe_idx, rows = map_gt_to_pipeline_frames(gt["frame25"], intervals)
+    keep = gt["valid"][rows] if len(rows) else np.array([], dtype=bool)
+    n_excluded = int((~keep).sum())
+    pipe_idx, rows = pipe_idx[keep], rows[keep]
+    
+    if len(pipe_idx) == 0:
+        return empty_video_result(meta, "no_overlap"), None
+
+    max_pipe = int(pipe_idx.max()) + 1 if len(pipe_idx) > 0 else 0
+    sel = assign_frame_windows(windows, max_pipe)[pipe_idx]
+    covered = sel >= 0
+    
+    idx = {c: j for j, c in enumerate(CLASSES_L0)}
+    W = np.zeros((len(windows), len(CLASSES_L0)), dtype=bool)
+    for w, (_, _, labels) in enumerate(windows):
+        for c in labels:
+            W[w, idx[c]] = True
+            
+    Y_pred = np.zeros((len(pipe_idx), len(CLASSES_L0)), dtype=bool)
+    Y_pred[covered] = W[sel[covered]]
+    Y_true = gt["Y"][rows]
+
+    acc0, jac0 = set_metrics(Y_true, Y_pred)
+    acc1, jac1 = set_metrics(project_to_l1(Y_true), project_to_l1(Y_pred))
+    n = len(pipe_idx)
+    
+    result = {
+        **meta, "skip_reason": None, "track_id": ",".join(track_ids),
+        "n_eval_frames": n, "n_covered_frames": int(covered.sum()), "coverage_ratio": covered.sum() / n,
+        "n_frames_excluded": n_excluded,
+        "subset_acc_L0": acc0, "jaccard_L0": jac0, "subset_acc_L1": acc1, "jaccard_L1": jac1,
+        "video_sec": max(end for _, end in intervals) / PIPELINE_FPS, # approssimato per il dict
+        "gt_end_sec": (int(gt["frame25"].max()) + 1) / GT_FPS,
+    }
+    return result, (Y_true, Y_pred, covered)
 
 
 # ACTION RECOGNITION PREDICTIONS
@@ -492,6 +586,73 @@ def compute_cooccurrence(Y_true, Y_pred, classes):
     return df
 
 
+# CONFUSION MATRIX
+NONE_MISSED = "None (missed)"      # extra column: GT label with no other class predicted in its place
+NONE_EXTRA = "None (extra)"        # extra row: predicted class with no GT label to blame
+LEVEL_TITLES = {"L0_fine": "fine level (L0)", "L1_coarse": "coarse level (L1)"}
+
+
+def compute_confusion_matrix(Y_true, Y_pred, classes):
+    """Confusion matrix for multi-label frames. Every GT label of a frame is counted once (rows sum to the
+    support of the class):
+      * label also predicted                      -> diagonal
+      * label missed, extra classes were predicted -> the miss is split equally among the extra classes
+      * label missed, nothing else was predicted   -> column "None (missed)"
+    Extra predictions on frames where no GT label was missed go to the row "None (extra)"."""
+    C = len(classes)
+    miss = Y_true & ~Y_pred
+    extra = Y_pred & ~Y_true
+    n_extra = extra.sum(axis=1)
+    has_extra = n_extra > 0
+    w = np.zeros(extra.shape, dtype=np.float64)
+    w[has_extra] = extra[has_extra] / n_extra[has_extra, None]
+
+    M = np.zeros((C + 1, C + 1), dtype=np.float64)
+    M[np.arange(C), np.arange(C)] = (Y_true & Y_pred).sum(axis=0)
+    M[:C, :C] += miss.astype(np.float64).T @ w
+    M[:C, C] = (miss & ~has_extra[:, None]).sum(axis=0)
+    M[C, :C] = extra[~miss.any(axis=1)].sum(axis=0)
+    return pd.DataFrame(M, index=list(classes) + [NONE_EXTRA], columns=list(classes) + [NONE_MISSED])
+
+
+def plot_confusion_matrix(cm, level_title, n_frames, path):
+    """Row-normalised heatmap (each row sums to 100%); rows without frames are grey."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed: confusion matrix plot skipped (the csv is still written).")
+        return
+    counts = cm.to_numpy(dtype=np.float64)
+    row_sum = counts.sum(axis=1)
+    pct = np.where(row_sum[:, None] > 0, counts / np.maximum(row_sum, 1e-12)[:, None] * 100, np.nan)
+    n, C = len(cm), len(cm) - 1
+
+    fig, ax = plt.subplots(figsize=(1.0 * n + 3.5, 0.9 * n + 2.5))
+    cmap = plt.get_cmap("Blues").copy()
+    cmap.set_bad("#e6e6e6")
+    im = ax.imshow(np.ma.masked_invalid(pct), cmap=cmap, vmin=0, vmax=100)
+    ax.set_xticks(range(n))
+    ax.set_xticklabels(cm.columns, rotation=45, ha="right")
+    ax.set_yticks(range(n))
+    ax.set_yticklabels([f"{name} (n={int(round(s))})" for name, s in zip(cm.index, row_sum)])
+    ax.axhline(C - 0.5, color="black", lw=0.8)
+    ax.axvline(C - 0.5, color="black", lw=0.8)
+    for i in range(n):
+        for j in range(n):
+            if not np.isnan(pct[i, j]):
+                ax.text(j, i, f"{pct[i, j]:.1f}", ha="center", va="center", fontsize=8,
+                        color="white" if pct[i, j] > 50 else "black")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Ground truth")
+    ax.set_title(f"Confusion matrix - {level_title}\nrow-normalized (%), {n_frames} ground-truth frames")
+    fig.colorbar(im, ax=ax, label="% of the row")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 # MAIN SCRIPT
 def discover_videos():
     """TUM videos (camX / camX_N) with their parts, found among the decoded-frame folders and the AR files.
@@ -526,62 +687,62 @@ def empty_video_result(meta, reason):
     }
 
 
-def evaluate_video(meta, parts, gt):
-    """Returns (result_dict, (Y_true_L0, Y_pred_L0, covered) or None)."""
-    video_name = meta["video"]
-    offsets, n_decoded = part_offsets(parts)
+# def evaluate_video(meta, parts, gt):
+#     """Returns (result_dict, (Y_true_L0, Y_pred_L0, covered) or None)."""
+#     video_name = meta["video"]
+#     offsets, n_decoded = part_offsets(parts)
     
-    if offsets is None:
-        return empty_video_result(meta, "missing_intermediate_part"), None
+#     if offsets is None:
+#         return empty_video_result(meta, "missing_intermediate_part"), None
 
-    windows, track_ids = [], []
-    for part, off in zip(parts, offsets):
-        ar_path, track_id, part_windows = select_ar_track(part)
-        if ar_path is None:
-            print(f"[{part}] no AR file: its frames stay uncovered.")
-            continue
-        track_ids.append(track_id)
-        shift = off if AR_FRAMES_RELATIVE_TO_PART else 0
-        windows += [(s + shift, e + shift, lab) for s, e, lab in part_windows]
-    if not track_ids:
-        return empty_video_result(meta, "no_ar_file"), None
+#     windows, track_ids = [], []
+#     for part, off in zip(parts, offsets):
+#         ar_path, track_id, part_windows = select_ar_track(part)
+#         if ar_path is None:
+#             print(f"[{part}] no AR file: its frames stay uncovered.")
+#             continue
+#         track_ids.append(track_id)
+#         shift = off if AR_FRAMES_RELATIVE_TO_PART else 0
+#         windows += [(s + shift, e + shift, lab) for s, e, lab in part_windows]
+#     if not track_ids:
+#         return empty_video_result(meta, "no_ar_file"), None
 
-    video_sec = n_decoded / PIPELINE_FPS if n_decoded is not None else None
-    gt_end_sec = (int(gt["frame25"].max()) + 1) / GT_FPS
-    if video_sec is not None and abs(video_sec - gt_end_sec) > ALIGNMENT_WARN_SEC:
-        print(f"[{video_name}] WARNING: video lasts {video_sec:.1f}s but labels_{meta['label_index']} end at "
-              f"{gt_end_sec:.1f}s. Check GT_ROW_OFFSET and VIDEO_TO_LABEL_INDEX (run --inspect).")
+#     video_sec = n_decoded / PIPELINE_FPS if n_decoded is not None else None
+#     gt_end_sec = (int(gt["frame25"].max()) + 1) / GT_FPS
+#     if video_sec is not None and abs(video_sec - gt_end_sec) > ALIGNMENT_WARN_SEC:
+#         print(f"[{video_name}] WARNING: video lasts {video_sec:.1f}s but labels_{meta['label_index']} end at "
+#               f"{gt_end_sec:.1f}s. Check GT_ROW_OFFSET and VIDEO_TO_LABEL_INDEX (run --inspect).")
 
-    pipe_idx, rows = map_gt_to_pipeline_frames(gt["frame25"], n_decoded)
-    keep = gt["valid"][rows] if len(rows) else np.array([], dtype=bool)
-    n_excluded = int((~keep).sum())          # GT frames with a missing / unknown label
-    pipe_idx, rows = pipe_idx[keep], rows[keep]
-    if len(pipe_idx) == 0:
-        return empty_video_result(meta, "no_overlap"), None
+#     pipe_idx, rows = map_gt_to_pipeline_frames(gt["frame25"], n_decoded)
+#     keep = gt["valid"][rows] if len(rows) else np.array([], dtype=bool)
+#     n_excluded = int((~keep).sum())          # GT frames with a missing / unknown label
+#     pipe_idx, rows = pipe_idx[keep], rows[keep]
+#     if len(pipe_idx) == 0:
+#         return empty_video_result(meta, "no_overlap"), None
 
-    max_pipe = int(pipe_idx.max()) + 1 if len(pipe_idx) > 0 else 0
-    sel = assign_frame_windows(windows, max_pipe)[pipe_idx]
-    covered = sel >= 0
-    idx = {c: j for j, c in enumerate(CLASSES_L0)}
-    W = np.zeros((len(windows), len(CLASSES_L0)), dtype=bool)
-    for w, (_, _, labels) in enumerate(windows):
-        for c in labels:
-            W[w, idx[c]] = True
-    Y_pred = np.zeros((len(pipe_idx), len(CLASSES_L0)), dtype=bool)
-    Y_pred[covered] = W[sel[covered]]
-    Y_true = gt["Y"][rows]
+#     max_pipe = int(pipe_idx.max()) + 1 if len(pipe_idx) > 0 else 0
+#     sel = assign_frame_windows(windows, max_pipe)[pipe_idx]
+#     covered = sel >= 0
+#     idx = {c: j for j, c in enumerate(CLASSES_L0)}
+#     W = np.zeros((len(windows), len(CLASSES_L0)), dtype=bool)
+#     for w, (_, _, labels) in enumerate(windows):
+#         for c in labels:
+#             W[w, idx[c]] = True
+#     Y_pred = np.zeros((len(pipe_idx), len(CLASSES_L0)), dtype=bool)
+#     Y_pred[covered] = W[sel[covered]]
+#     Y_true = gt["Y"][rows]
 
-    acc0, jac0 = set_metrics(Y_true, Y_pred)
-    acc1, jac1 = set_metrics(project_to_l1(Y_true), project_to_l1(Y_pred))
-    n = len(pipe_idx)
-    result = {
-        **meta, "skip_reason": None, "track_id": ",".join(track_ids),
-        "n_eval_frames": n, "n_covered_frames": int(covered.sum()), "coverage_ratio": covered.sum() / n,
-        "n_frames_excluded": n_excluded,
-        "subset_acc_L0": acc0, "jaccard_L0": jac0, "subset_acc_L1": acc1, "jaccard_L1": jac1,
-        "video_sec": video_sec, "gt_end_sec": gt_end_sec,
-    }
-    return result, (Y_true, Y_pred, covered)
+#     acc0, jac0 = set_metrics(Y_true, Y_pred)
+#     acc1, jac1 = set_metrics(project_to_l1(Y_true), project_to_l1(Y_pred))
+#     n = len(pipe_idx)
+#     result = {
+#         **meta, "skip_reason": None, "track_id": ",".join(track_ids),
+#         "n_eval_frames": n, "n_covered_frames": int(covered.sum()), "coverage_ratio": covered.sum() / n,
+#         "n_frames_excluded": n_excluded,
+#         "subset_acc_L0": acc0, "jaccard_L0": jac0, "subset_acc_L1": acc1, "jaccard_L1": jac1,
+#         "video_sec": video_sec, "gt_end_sec": gt_end_sec,
+#     }
+#     return result, (Y_true, Y_pred, covered)
 
 
 def main():
@@ -591,8 +752,8 @@ def main():
     print(f"Found {len(gt_index)} label files and {len(videos)} videos. Starting Action Recognition validation...")
 
     video_results, pooled = [], []
-    skipped = {"no_gt_file": 0, "no_ar_file": 0, "invalid_gt": 0, "no_overlap": 0, "missing_intermediate_part": 0}
-
+    # skipped = {"no_gt_file": 0, "no_ar_file": 0, "invalid_gt": 0, "no_overlap": 0, "missing_intermediate_part": 0}
+    skipped = {"no_gt_file": 0, "no_ar_file": 0, "invalid_gt": 0, "no_overlap": 0, "no_valid_parts": 0}
     for video_name, camera, video_index, parts in videos:
         label_index = label_index_for_video(video_index)
         meta = {"video": video_name, "camera": camera, "video_index": video_index,
@@ -619,7 +780,8 @@ def main():
             continue
         pooled.append(arrays)
         print(
-            f"[{video_name}] labels={label_index} track={result['track_id']} | frames={result['n_eval_frames']} | "
+            f"[{video_name}] labels={label_index} parts={result['n_parts_evaluated']}/{result['n_parts']} "
+            f"track={result['track_id']} | frames={result['n_eval_frames']} | "
             f"coverage={result['coverage_ratio']:.2f} | "
             f"subset_acc L0={result['subset_acc_L0']:.3f} L1={result['subset_acc_L1']:.3f} | "
             f"jaccard L0={result['jaccard_L0']:.3f} L1={result['jaccard_L1']:.3f}"
@@ -677,6 +839,9 @@ def print_and_save_summary(video_results, skipped, pooled):
         df = compute_per_class_prf1(yt, yp, covered, classes, level)
         tables.append(df)
         compute_cooccurrence(yt, yp, classes).to_csv(OUTPUT_CSV_COOC.format(level=level))
+        cm = compute_confusion_matrix(yt, yp, classes)
+        cm.to_csv(OUTPUT_CSV_CM.format(level=level))
+        plot_confusion_matrix(cm, LEVEL_TITLES[level], len(yt), OUTPUT_PNG_CM.format(level=level))
         print(f"\nPrecision / Recall / F1 per class - {level} (pooled over {len(yt)} frames):")
         print(df.drop(columns="level").to_string(
             index=False, float_format=lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"))
@@ -685,6 +850,7 @@ def print_and_save_summary(video_results, skipped, pooled):
     df_all.to_csv(OUTPUT_CSV_PER_CLASS, index=False)
     print(f"\nPrecision/Recall/F1 per class saved in: {OUTPUT_CSV_PER_CLASS}")
     print("GT x predicted co-occurrence matrices saved in: " + OUTPUT_CSV_COOC.format(level="<level>"))
+    print("Confusion matrices (csv with counts + png) saved in: " + OUTPUT_PNG_CM.format(level="<level>"))
 
     print("\nHEADLINE (macro-F1):")
     for level in per_level:
@@ -722,7 +888,7 @@ def inspect_gt():
     durations, n_pairs, n_ok, no_label = {}, 0, 0, []
     for name, camera, vidx, parts in videos:
         lidx = label_index_for_video(vidx)
-        offsets, n_dec = part_offsets(parts)
+        n_dec = total_decoded_frames(parts)
         vsec = n_dec / PIPELINE_FPS if n_dec is not None else None
         if vsec is not None:
             durations.setdefault(vidx, []).append(vsec)

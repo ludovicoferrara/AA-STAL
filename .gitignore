@@ -208,3 +208,4 @@ checkpoints_50/
 checkpoints_75/
 checkpoints_100/
 checkpoints_100_gt/
+evaluation/TUMKitchen/action_recognition_validation/
