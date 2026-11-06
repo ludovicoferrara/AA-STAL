@@ -17,6 +17,7 @@ Differences with respect to the PennAction version:
   * Macro / micro averages are reported with and without CarryingWhileLocomoting.
   * A multi-label confusion matrix (csv + png, one per level) is saved too.
   * Only the video parts that already have an AR file are evaluated (partial runs are possible).
+  * Every metric is computed overall AND separately for each camera (videos cam0*, cam1*, ...).
 
 Naming:  labels.csv, labels_2.csv, ... labels_19.csv  <->  cam0, cam0_2, ... (and cam1, cam2, ...)
          The suffix is read as an index (no suffix = 1). Videos without a label file are skipped.
@@ -50,6 +51,10 @@ OUTPUT_CSV_PER_CLASS = os.path.join(OUTPUT_DIR, "ar_validation_per_class_prf1.cs
 OUTPUT_CSV_COOC = os.path.join(OUTPUT_DIR, "ar_validation_cooccurrence_{level}.csv")
 OUTPUT_CSV_CM = os.path.join(OUTPUT_DIR, "ar_validation_confusion_matrix_{level}.csv")
 OUTPUT_PNG_CM = os.path.join(OUTPUT_DIR, "ar_validation_confusion_matrix_{level}.png")
+# Per-camera results: same files as above, in OUTPUT_DIR/cam0/, OUTPUT_DIR/cam1/, ... (the files above are the
+# overall ones). These two compare all cameras side by side.
+OUTPUT_CSV_PER_CLASS_BY_CAMERA = os.path.join(OUTPUT_DIR, "ar_validation_per_class_prf1_by_camera.csv")
+OUTPUT_CSV_SUMMARY_BY_CAMERA = os.path.join(OUTPUT_DIR, "ar_validation_summary_by_camera.csv")
 
 # FILE NAMES
 GT_FILE_GLOB = "**/*.csv"
@@ -778,7 +783,7 @@ def main():
             print(f"[{video_name}] {result['skip_reason']}. Skipping.")
             skipped[result["skip_reason"]] += 1
             continue
-        pooled.append(arrays)
+        pooled.append((*arrays, camera))
         print(
             f"[{video_name}] labels={label_index} parts={result['n_parts_evaluated']}/{result['n_parts']} "
             f"track={result['track_id']} | frames={result['n_eval_frames']} | "
@@ -788,6 +793,77 @@ def main():
         )
 
     print_and_save_summary(video_results, skipped, pooled)
+
+
+def out_path(path, tag):
+    """Overall results keep their file name; every camera gets its own sub-folder (OUTPUT_DIR/cam0/...)."""
+    if tag == "all":
+        return path
+    d = os.path.join(os.path.dirname(path), tag)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, os.path.basename(path))
+
+
+def report_group(tag, camera, df_video, pooled):
+    """Print and save every metric for one group of videos (camera=None -> all cameras).
+    Returns (per-class table of both levels, headline rows) or (None, [])."""
+    dv_all = df_video if camera is None else df_video[df_video["camera"] == camera]
+    dv = dv_all[dv_all["skip_reason"].isna()]
+    arrays = [a for a in pooled if camera is None or a[3] == camera]
+    scope = "all cameras" if camera is None else f"camera {camera}"
+
+    print("\n" + "=" * 60)
+    print(f"FINAL RESULTS ACTION RECOGNITION - {scope.upper()} (frame level, 25 Hz GT frames)")
+    print("=" * 60)
+    print(f"Total videos found:                      {len(dv_all)}")
+    print(f"Videos actually evaluated:               {len(dv)}")
+    if not dv.empty:
+        print(f"Average coverage (macro, per video):     {dv['coverage_ratio'].mean():.4f}")
+        for lvl in ("L0", "L1"):
+            print(f"Subset accuracy {lvl} (macro, per video):  {dv[f'subset_acc_{lvl}'].mean():.4f}   "
+                  f"Jaccard {lvl}: {dv[f'jaccard_{lvl}'].mean():.4f}")
+
+    if not arrays:
+        print("\nNo evaluable frames for Precision/Recall/F1 calculation.")
+        return None, []
+
+    Y_true = np.concatenate([a[0] for a in arrays])
+    Y_pred = np.concatenate([a[1] for a in arrays])
+    covered = np.concatenate([a[2] for a in arrays])
+    per_level = {
+        "L0_fine": (Y_true, Y_pred),
+        "L1_coarse": (project_to_l1(Y_true), project_to_l1(Y_pred)),
+    }
+
+    tables, headline = [], []
+    for level, (yt, yp) in per_level.items():
+        classes = LEVELS[level]
+        df = compute_per_class_prf1(yt, yp, covered, classes, level)
+        tables.append(df)
+        compute_cooccurrence(yt, yp, classes).to_csv(out_path(OUTPUT_CSV_COOC.format(level=level), tag))
+        cm = compute_confusion_matrix(yt, yp, classes)
+        cm.to_csv(out_path(OUTPUT_CSV_CM.format(level=level), tag))
+        plot_confusion_matrix(cm, f"{LEVEL_TITLES[level]} - {scope}", len(yt),
+                              out_path(OUTPUT_PNG_CM.format(level=level), tag))
+        print(f"\nPrecision / Recall / F1 per class - {level}, {scope} (pooled over {len(yt)} frames):")
+        print(df.drop(columns="level").to_string(
+            index=False, float_format=lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"))
+        f1 = df.set_index("action")["f1"]
+        headline.append({
+            "camera": tag, "level": level, "n_videos": len(dv), "n_frames": len(yt),
+            "macro_f1": f1.get("MACRO_AVG", np.nan), "macro_f1_no_carry": f1.get("MACRO_AVG_NO_CARRY", np.nan),
+            "micro_f1": f1.get("MICRO_AVG", np.nan), "micro_f1_no_carry": f1.get("MICRO_AVG_NO_CARRY", np.nan),
+        })
+
+    df_all = pd.concat(tables, ignore_index=True)
+    df_all.to_csv(out_path(OUTPUT_CSV_PER_CLASS, tag), index=False)
+    print(f"\nFiles saved in: {os.path.dirname(out_path(OUTPUT_CSV_PER_CLASS, tag))}")
+    print("  per-class P/R/F1, GT x predicted co-occurrence, confusion matrices (csv with counts + png)")
+    print(f"\nHEADLINE (macro-F1), {scope}:")
+    for row in headline:
+        print(f"  {row['level']}: all classes {row['macro_f1']:.4f} | without {CARRY} {row['macro_f1_no_carry']:.4f}"
+              f" | micro-F1 {row['micro_f1']:.4f}")
+    return df_all, headline
 
 
 def print_and_save_summary(video_results, skipped, pooled):
@@ -807,56 +883,28 @@ def print_and_save_summary(video_results, skipped, pooled):
 
     df_video = pd.DataFrame(video_results)
     df_video.to_csv(OUTPUT_CSV_PER_VIDEO, index=False)
-    df_valid = df_video[df_video["skip_reason"].isna()]
-
-    print("\n" + "=" * 60)
-    print("FINAL RESULTS ACTION RECOGNITION (frame level, 25 Hz GT frames)")
-    print("=" * 60)
-    print(f"Total videos found:                      {len(df_video)}")
-    print(f"Videos actually evaluated:               {len(df_valid)}")
-    if not df_valid.empty:
-        print(f"Average coverage (macro, per video):     {df_valid['coverage_ratio'].mean():.4f}")
-        for lvl in ("L0", "L1"):
-            print(f"Subset accuracy {lvl} (macro, per video):  {df_valid[f'subset_acc_{lvl}'].mean():.4f}   "
-                  f"Jaccard {lvl}: {df_valid[f'jaccard_{lvl}'].mean():.4f}")
     print(f"\nResults per-video saved in: {OUTPUT_CSV_PER_VIDEO}")
 
-    if not pooled:
-        print("\nNo evaluable frames for Precision/Recall/F1 calculation.")
+    groups = [("all", None)] + [(f"cam{int(c)}", int(c)) for c in sorted(df_video["camera"].dropna().unique())]
+    tables, headline_rows = [], []
+    for tag, camera in groups:
+        table, rows = report_group(tag, camera, df_video, pooled)
+        if table is not None:
+            tables.append(table.assign(camera=tag))
+            headline_rows += rows
+
+    if not tables:
         return
-
-    Y_true = np.concatenate([a[0] for a in pooled])
-    Y_pred = np.concatenate([a[1] for a in pooled])
-    covered = np.concatenate([a[2] for a in pooled])
-    per_level = {
-        "L0_fine": (Y_true, Y_pred),
-        "L1_coarse": (project_to_l1(Y_true), project_to_l1(Y_pred)),
-    }
-
-    tables = []
-    for level, (yt, yp) in per_level.items():
-        classes = LEVELS[level]
-        df = compute_per_class_prf1(yt, yp, covered, classes, level)
-        tables.append(df)
-        compute_cooccurrence(yt, yp, classes).to_csv(OUTPUT_CSV_COOC.format(level=level))
-        cm = compute_confusion_matrix(yt, yp, classes)
-        cm.to_csv(OUTPUT_CSV_CM.format(level=level))
-        plot_confusion_matrix(cm, LEVEL_TITLES[level], len(yt), OUTPUT_PNG_CM.format(level=level))
-        print(f"\nPrecision / Recall / F1 per class - {level} (pooled over {len(yt)} frames):")
-        print(df.drop(columns="level").to_string(
-            index=False, float_format=lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"))
-
-    df_all = pd.concat(tables, ignore_index=True)
-    df_all.to_csv(OUTPUT_CSV_PER_CLASS, index=False)
-    print(f"\nPrecision/Recall/F1 per class saved in: {OUTPUT_CSV_PER_CLASS}")
-    print("GT x predicted co-occurrence matrices saved in: " + OUTPUT_CSV_COOC.format(level="<level>"))
-    print("Confusion matrices (csv with counts + png) saved in: " + OUTPUT_PNG_CM.format(level="<level>"))
-
-    print("\nHEADLINE (macro-F1):")
-    for level in per_level:
-        d = df_all[df_all["level"] == level].set_index("action")["f1"]
-        print(f"  {level}: all classes {d['MACRO_AVG']:.4f} | without {CARRY} {d['MACRO_AVG_NO_CARRY']:.4f}"
-              f" | micro-F1 {d['MICRO_AVG']:.4f}")
+    by_camera = pd.concat(tables, ignore_index=True)
+    by_camera = by_camera[["camera"] + [c for c in by_camera.columns if c != "camera"]]
+    by_camera.to_csv(OUTPUT_CSV_PER_CLASS_BY_CAMERA, index=False)
+    summary = pd.DataFrame(headline_rows)
+    summary.to_csv(OUTPUT_CSV_SUMMARY_BY_CAMERA, index=False)
+    print("\n" + "=" * 60)
+    print("SUMMARY BY CAMERA (macro / micro F1)")
+    print("=" * 60)
+    print(summary.to_string(index=False, float_format=lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"))
+    print(f"\nSaved: {OUTPUT_CSV_PER_CLASS_BY_CAMERA}\n       {OUTPUT_CSV_SUMMARY_BY_CAMERA}")
 
 
 # INSPECTION: GT format + video <-> label pairing
