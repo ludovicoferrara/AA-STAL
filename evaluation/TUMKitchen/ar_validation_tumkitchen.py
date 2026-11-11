@@ -90,7 +90,7 @@ from collections import Counter
 
 DATA_ROOT = "/home/ludovico/workspace/AA-STAL/data_pipeline/DATA_ROOT"
 
-AR_DIR = os.path.join(DATA_ROOT, "action_recognition_finished1")
+AR_DIR = os.path.join(DATA_ROOT, "action_recognition_finished")
 
 GT_DIR = os.path.join(DATA_ROOT, "groundtruth/TUMKitchen")
 
